@@ -62,10 +62,10 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 
       const message =
         `📈 <b>Chào mừng bạn đến với Stock News Bot!</b>\n\n` +
-        `Bot sẽ tự động cập nhật tin tức chứng khoán mới nhất từ các trang uy tín như <b>CafeF</b>.\n\n` +
+        `Bot tự động cập nhật tin tức chứng khoán mới nhất từ các nguồn uy tín <b>CafeF</b> và <b>Investing.com Việt Nam</b>.\n\n` +
         `<b>Danh sách câu lệnh khả dụng:</b>\n` +
         `• /latest - Xem 5 tin tức mới nhất\n` +
-        `• /stock &lt;MÃ&gt; - Xem tin tức theo mã cổ phiếu (VD: <code>/stock SSI</code>)\n` +
+        `• /stock &lt;MÃ&gt; - Xem tin tức theo mã cổ phiếu (VD: <code>/stock SSI</code> hoặc <code>/stock HPG</code>)\n` +
         `• /subscribe - Đăng ký nhận thông báo tự động\n` +
         `• /unsubscribe - Tắt nhận thông báo tự động\n` +
         `• /help - Hướng dẫn sử dụng`;
@@ -77,9 +77,9 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     this.bot.help((ctx: Context) => {
       const message =
         `ℹ️ <b>Hướng dẫn sử dụng Stock News Bot:</b>\n\n` +
-        `1. Bot tự động quét tin tức mỗi 1-3 phút.\n` +
+        `1. Bot tự động quét tin tức từ CafeF và Investing.com định kỳ mỗi 1-3 phút.\n` +
         `2. Bạn đã được tự động đăng ký nhận tin khi bấm /start.\n` +
-        `3. Gõ <code>/stock SSI</code> hoặc <code>/stock HPG</code> để lọc tin cổ phiếu cụ thể.`;
+        `3. Gõ <code>/stock SSI</code> hoặc <code>/stock VNM</code> để lọc tin cổ phiếu cụ thể.`;
       return ctx.replyWithHTML(message);
     });
 
@@ -193,12 +193,12 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       html += `🏷️ <b>Mã liên quan:</b> ${tickersStr}\n`;
     }
 
-    html += `🏛️ <b>Nguồn:</b> ${news.source || 'CafeF'}\n`;
+    html += `🏛️ <b>Nguồn:</b> ${news.source || 'Investing.com / CafeF'}\n`;
     if (formattedDate) {
       html += `⏰ <b>Thời gian:</b> ${formattedDate}\n`;
     }
 
-    html += `\n🔗 <a href="${news.url}">Đọc bài viết chi tiết tại CafeF</a>`;
+    html += `\n🔗 <a href="${news.url}">Đọc bài viết chi tiết</a>`;
 
     return html;
   }

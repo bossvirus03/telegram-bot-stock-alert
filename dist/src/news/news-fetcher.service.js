@@ -49,11 +49,26 @@ const rss_parser_1 = __importDefault(require("rss-parser"));
 const cheerio = __importStar(require("cheerio"));
 let NewsFetcherService = NewsFetcherService_1 = class NewsFetcherService {
     logger = new common_1.Logger(NewsFetcherService_1.name);
-    parser = new rss_parser_1.default();
+    parser = new rss_parser_1.default({
+        customFields: {
+            item: ['enclosure', 'author', 'description'],
+        },
+    });
     CAFEF_STOCK_RSS = 'https://cafef.vn/thi-truong-chung-khoan.rss';
+    INVESTING_STOCK_RSS = 'https://vn.investing.com/rss/news_25.rss';
+    INVESTING_GENERAL_RSS = 'https://vn.investing.com/rss/news.rss';
+    async fetchAllNews() {
+        const [cafefNews, investingNews] = await Promise.all([
+            this.fetchCafeFNews(),
+            this.fetchInvestingNews(),
+        ]);
+        const combined = [...cafefNews, ...investingNews];
+        combined.sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+        return combined;
+    }
     async fetchCafeFNews() {
         try {
-            this.logger.log(`Bắt đầu tải RSS tin tức từ CafeF: ${this.CAFEF_STOCK_RSS}`);
+            this.logger.log(`Tải tin tức từ CafeF: ${this.CAFEF_STOCK_RSS}`);
             const feed = await this.parser.parseURL(this.CAFEF_STOCK_RSS);
             const items = [];
             for (const item of feed.items) {
@@ -61,8 +76,8 @@ let NewsFetcherService = NewsFetcherService_1 = class NewsFetcherService {
                     continue;
                 let summary = '';
                 let imageUrl = undefined;
-                if (item.content || item.description) {
-                    const rawHtml = item.content || item.description || '';
+                const rawHtml = item.content || item.description || '';
+                if (rawHtml) {
                     const $ = cheerio.load(rawHtml);
                     const imgTag = $('img');
                     if (imgTag && imgTag.attr('src')) {
@@ -82,23 +97,64 @@ let NewsFetcherService = NewsFetcherService_1 = class NewsFetcherService {
                     publishedAt: pubDate,
                 });
             }
-            this.logger.log(`Thu thập thành công ${items.length} tin tức từ CafeF`);
             return items;
         }
         catch (error) {
-            this.logger.error(`Lỗi khi cào tin tức CafeF: ${error.message}`, error.stack);
+            this.logger.error(`Lỗi khi cào tin CafeF: ${error.message}`);
             return [];
         }
+    }
+    async fetchInvestingNews() {
+        const urls = [this.INVESTING_STOCK_RSS, this.INVESTING_GENERAL_RSS];
+        const items = [];
+        const seenUrls = new Set();
+        for (const url of urls) {
+            try {
+                this.logger.log(`Tải tin tức từ Investing.com: ${url}`);
+                const feed = await this.parser.parseURL(url);
+                for (const item of feed.items) {
+                    if (!item.link || !item.title || seenUrls.has(item.link))
+                        continue;
+                    seenUrls.add(item.link);
+                    let imageUrl = undefined;
+                    if (item.enclosure && item.enclosure.url) {
+                        imageUrl = item.enclosure.url;
+                    }
+                    let summary = '';
+                    const rawText = item.contentSnippet || item.content || item.description || '';
+                    if (rawText) {
+                        const $ = cheerio.load(rawText);
+                        summary = $.text().trim();
+                    }
+                    const pubDate = item.pubDate ? new Date(item.pubDate) : new Date();
+                    const tickers = this.extractStockTickers(`${item.title} ${summary}`);
+                    items.push({
+                        title: item.title.trim(),
+                        url: item.link.trim(),
+                        summary: summary,
+                        imageUrl: imageUrl,
+                        source: 'Investing.com',
+                        tickers: tickers,
+                        publishedAt: pubDate,
+                    });
+                }
+            }
+            catch (error) {
+                this.logger.error(`Lỗi khi cào tin tức từ Investing.com [${url}]: ${error.message}`);
+            }
+        }
+        this.logger.log(`Thu thập thành công ${items.length} tin tức từ Investing.com`);
+        return items;
     }
     extractStockTickers(text) {
         if (!text)
             return [];
-        const regex = /\b([A-Z]{3}|VN-INDEX|VNINDEX|HNX-INDEX)\b/g;
+        const regex = /\b([A-Z]{3}|VN-INDEX|VNINDEX|HNX-INDEX|S&P 500|NASDAQ)\b/g;
         const matches = text.match(regex) || [];
         const stopWords = new Set([
             'HOT', 'NEW', 'RSS', 'TOP', 'CEO', 'CFO', 'CTHD', 'TND', 'USD', 'VND',
             'EUR', 'JPY', 'GBP', 'BOT', 'API', 'APP', 'WEB', 'DAT', 'NAY', 'XEM',
-            'BAN', 'MUA', 'OAT', 'NHM'
+            'BAN', 'MUA', 'OAT', 'NHM', 'EPS', 'FED', 'TSX', 'UBS'
         ]);
         const uniqueTickers = new Set();
         for (const match of matches) {

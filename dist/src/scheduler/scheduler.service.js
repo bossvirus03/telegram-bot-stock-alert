@@ -27,19 +27,19 @@ let SchedulerService = SchedulerService_1 = class SchedulerService {
         this.telegramService = telegramService;
     }
     async onModuleInit() {
-        this.logger.log('SchedulerService đã sẵn sàng. Thực hiện quét tin CafeF ban đầu...');
+        this.logger.log('SchedulerService đã sẵn sàng. Thực hiện quét tin CafeF & Investing.com ban đầu...');
         await this.handleCron();
     }
     async handleCron() {
-        this.logger.log('⏰ [CronJob] Bắt đầu quét tin tức chứng khoán mới từ CafeF...');
-        const fetchedItems = await this.newsFetcherService.fetchCafeFNews();
+        this.logger.log('⏰ [CronJob] Bắt đầu quét tin tức chứng khoán mới từ CafeF & Investing.com...');
+        const fetchedItems = await this.newsFetcherService.fetchAllNews();
         if (!fetchedItems || fetchedItems.length === 0) {
             this.logger.warn('[CronJob] Không thu thập được tin tức mới nào.');
             return;
         }
         const newItems = await this.newsService.saveAndFilterNewNews(fetchedItems);
         if (newItems.length > 0) {
-            this.logger.log(`🔥 Phát hiện ${newItems.length} tin tức MỚI từ CafeF! Tiến hành phát thông báo...`);
+            this.logger.log(`🔥 Phát hiện ${newItems.length} tin tức MỚI từ CafeF & Investing.com! Tiến hành phát thông báo...`);
             await this.telegramService.broadcastNews(newItems);
         }
         else {
