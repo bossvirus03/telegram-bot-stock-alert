@@ -1,0 +1,1 @@
+{"version":3,"file":"news.module.js","sourceRoot":"","sources":["../../../src/news/news.module.ts"],"names":[],"mappings":";;;;;;;;;AAAA,2CAAwC;AACxC,iEAA4D;AAC5D,iDAA6C;AAMtC,IAAM,UAAU,GAAhB,MAAM,UAAU;CAAG,CAAA;AAAb,gCAAU;qBAAV,UAAU;IAJtB,IAAA,eAAM,EAAC;QACN,SAAS,EAAE,CAAC,yCAAkB,EAAE,0BAAW,CAAC;QAC5C,OAAO,EAAE,CAAC,yCAAkB,EAAE,0BAAW,CAAC;KAC3C,CAAC;GACW,UAAU,CAAG"}

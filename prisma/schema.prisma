@@ -1,0 +1,31 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model News {
+  id          String   @id @default(uuid())
+  title       String
+  url         String   @unique
+  summary     String?  @db.Text
+  imageUrl    String?
+  source      String   @default("CafeF")
+  tickers     String[]
+  publishedAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([publishedAt])
+}
+
+model Subscription {
+  id           String   @id @default(uuid())
+  chatId       String   @unique
+  chatType     String   @default("private")
+  isSubscribed Boolean  @default(true)
+  symbols      String[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
