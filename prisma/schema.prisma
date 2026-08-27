@@ -1,0 +1,52 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model TelegramUser {
+  id        Int      @id @default(autoincrement())
+  chatId    String   @unique
+  username  String?
+  createdAt DateTime @default(now())
+
+  @@map("telegram_users")
+}
+
+model UserWatchlist {
+  id        Int      @id @default(autoincrement())
+  chatId    String
+  username  String?
+  symbol    String
+  createdAt DateTime @default(now())
+
+  @@unique([chatId, symbol])
+  @@map("user_watchlists")
+}
+
+model NewsArticle {
+  id             Int      @id @default(autoincrement())
+  url            String   @unique
+  title          String
+  summary        String?
+  source         String
+  symbols        String[]
+  publishedAt    DateTime?
+  sentToTelegram Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  @@map("news_articles")
+}
+
+model StockAlertLog {
+  id        Int      @id @default(autoincrement())
+  symbol    String
+  alertType String
+  message   String
+  createdAt DateTime @default(now())
+
+  @@map("stock_alert_logs")
+}
