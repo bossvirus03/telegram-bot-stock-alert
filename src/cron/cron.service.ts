@@ -4,6 +4,7 @@ import { NewsService } from '../news/news.service';
 import { WatchlistService } from '../watchlist/watchlist.service';
 import { StockService } from '../stock/stock.service';
 import { TelegramService } from '../telegram/telegram.service';
+import { Markup } from 'telegraf';
 
 @Injectable()
 export class CronService implements OnModuleInit {
@@ -68,20 +69,31 @@ export class CronService implements OnModuleInit {
         const userSymbols = watchlistMap.get(user.chatId) || [];
         const isMatchedWatchlist = hasSpecificSymbols && article.symbols.some((s) => userSymbols.includes(s));
 
-        const headerText = isMatchedWatchlist
-          ? `🔔 <b>TIN NÓNG CỔ PHIẾU BẠN THEO DÕI [${article.symbols.filter((s) => userSymbols.includes(s)).join(', ')}]</b>`
-          : `📰 <b>TIN CHỨNG KHOÁN MỚI NHẤT</b>`;
+        // CHỈ phát thông báo ngầm nếu tin thuộc các mã cổ phiếu User đã bấm /add vào danh mục
+        if (!isMatchedWatchlist) {
+          continue;
+        }
+
+        const matchedSyms = article.symbols.filter((s) => userSymbols.includes(s)).join(', ');
+        const headerText = `🔔 <b>TIN NÓNG CỔ PHIẾU BẠN THEO DÕI [${matchedSyms}]</b>`;
+
+        const pubDate = new Date(article.publishedAt || article.createdAt);
+        const dateStr = pubDate.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        const timeStr = pubDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
 
         const message = `
 ${headerText}
 
-🔹 <b><a href="${article.url}">${article.title}</a></b>
-<i>${article.summary ? article.summary.slice(0, 200) + '...' : ''}</i>
+🔹 <b>${article.title}</b>
+${article.summary && article.summary !== article.title ? `<i>${article.summary.slice(0, 180)}...</i>\n` : ''}
+📅 <b>Ngày ra tin:</b> ${dateStr} ${timeStr} | 📌 Nguồn: <b>${article.source}</b>
+        `.trim();
 
-📌 Nguồn: ${article.source} | ${new Date().toLocaleTimeString('vi-VN')}
-        `;
+        const keyboard = Markup.inlineKeyboard([
+          [Markup.button.url(`🔗 Đọc ngay: ${article.title.slice(0, 30)}...`, article.url)],
+        ]);
 
-        await this.telegramService.sendMessage(user.chatId, message);
+        await this.telegramService.sendMessage(user.chatId, message, keyboard);
         actuallySentCount++;
       }
 

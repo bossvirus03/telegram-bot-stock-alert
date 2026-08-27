@@ -7,6 +7,7 @@ import { NewsModule } from './news/news.module';
 import { WatchlistModule } from './watchlist/watchlist.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { CronModule } from './cron/cron.module';
+import { AiModule } from './ai/ai.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { CronModule } from './cron/cron.module';
     WatchlistModule,
     TelegramModule,
     CronModule,
+    AiModule,
   ],
 })
 export class AppModule {}

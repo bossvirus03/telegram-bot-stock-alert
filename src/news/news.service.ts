@@ -59,7 +59,7 @@ export class NewsService {
             summary: summary || title,
             source: 'CafeF',
             symbols,
-            publishedAt: new Date(),
+            publishedAt: this.extractPublishDate(url),
           });
         }
       });
@@ -199,20 +199,159 @@ export class NewsService {
   }
 
   /**
-   * Lấy tin tức mới nhất của 1 mã cổ phiếu
+   * Quét trực tiếp tin tức theo từng mã cổ phiếu từ trang tìm kiếm/tag của CafeF
+   */
+  async scrapeNewsForSymbol(symbol: string): Promise<ScrapedNews[]> {
+    const cleanSym = symbol.toUpperCase();
+    const scrapedArticles: ScrapedNews[] = [];
+
+    try {
+      let url = `https://cafef.vn/tap-doan-${cleanSym.toLowerCase()}.html`;
+      let res;
+      try {
+        res = await axios.get(url, {
+          timeout: 5000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+        });
+      } catch {
+        url = `https://cafef.vn/tim-kiem.chn?keywords=${cleanSym}`;
+        res = await axios.get(url, {
+          timeout: 5000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          },
+        });
+      }
+
+      const $ = cheerio.load(res.data);
+
+      $('h3 a, .title a, a.avatar, .timeline-item a').each((_, el) => {
+        const title = $(el).text().trim() || $(el).attr('title')?.trim();
+        const href = $(el).attr('href');
+        if (title && href && title.length > 15 && href.endsWith('.chn')) {
+          const fullUrl = href.startsWith('http') ? href : `https://cafef.vn${href}`;
+          
+          if (!scrapedArticles.some((a) => a.url === fullUrl)) {
+            scrapedArticles.push({
+              title,
+              url: fullUrl,
+              summary: title,
+              source: 'CafeF',
+              symbols: [cleanSym],
+              publishedAt: this.extractPublishDate(fullUrl),
+            });
+          }
+        }
+      });
+
+      // Lưu tin bài quét được vào Database
+      for (const article of scrapedArticles.slice(0, 10)) {
+        try {
+          const existing = await this.prisma.executeWithRetry(() =>
+            this.prisma.newsArticle.findUnique({
+              where: { url: article.url },
+            }),
+          );
+
+          if (!existing) {
+            await this.prisma.executeWithRetry(() =>
+              this.prisma.newsArticle.create({
+                data: {
+                  url: article.url,
+                  title: article.title,
+                  summary: article.summary,
+                  source: article.source,
+                  symbols: article.symbols,
+                  publishedAt: article.publishedAt,
+                  sentToTelegram: true, // Đánh dấu đã xử lý để không kích hoạt broadcast ngầm trùng lặp
+                },
+              }),
+            );
+          }
+        } catch (err) {
+          // Bỏ qua nếu tin trùng URL
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Lỗi khi quét tin tức mã ${cleanSym}: ${error.message}`);
+    }
+
+    return scrapedArticles;
+  }
+
+  /**
+   * Lấy tin tức chuẩn xác 100% của 1 mã cổ phiếu (Tự động cào tin mới theo mã)
    */
   async getLatestNewsBySymbol(symbol: string, limit = 5) {
     const cleanSym = symbol.toUpperCase();
-    return this.prisma.executeWithRetry(() =>
+
+    // 1. Thử lấy tin trong DB gắn thẻ hoặc có chứa tên mã cổ phiếu
+    let articles = await this.prisma.executeWithRetry(() =>
       this.prisma.newsArticle.findMany({
         where: {
-          symbols: {
-            has: cleanSym,
-          },
+          OR: [
+            { symbols: { has: cleanSym } },
+            { title: { contains: cleanSym, mode: 'insensitive' } },
+            { summary: { contains: cleanSym, mode: 'insensitive' } },
+          ],
         },
         take: limit,
         orderBy: { createdAt: 'desc' },
       }),
     );
+
+    // 2. Nếu ít hơn 3 tin, kích hoạt cào tin chính xác mã cổ phiếu từ CafeF
+    if (articles.length < 3) {
+      await this.scrapeNewsForSymbol(cleanSym);
+
+      articles = await this.prisma.executeWithRetry(() =>
+        this.prisma.newsArticle.findMany({
+          where: {
+            OR: [
+              { symbols: { has: cleanSym } },
+              { title: { contains: cleanSym, mode: 'insensitive' } },
+              { summary: { contains: cleanSym, mode: 'insensitive' } },
+            ],
+          },
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+        }),
+      );
+    }
+
+    return articles;
+  }
+
+  /**
+   * Trích xuất thời gian phát hành bài báo thực tế từ URL của CafeF
+   */
+  private extractPublishDate(url: string): Date {
+    try {
+      // Regex 1: Chuỗi CafeF 188 YY MM DD HH MM (VD: 188260805135155233.chn -> 05/08/2026 13:51)
+      const match188 = url.match(/188(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
+      if (match188) {
+        const year = 2000 + parseInt(match188[1], 10);
+        const month = parseInt(match188[2], 10) - 1;
+        const day = parseInt(match188[3], 10);
+        const hour = parseInt(match188[4], 10);
+        const min = parseInt(match188[5], 10);
+        return new Date(year, month, day, hour, min);
+      }
+
+      // Regex 2: Chuỗi YYYY MM DD HH MM (VD: 202608051351)
+      const matchFullYear = url.match(/(202[4-9])(\d{2})(\d{2})(\d{2})(\d{2})/);
+      if (matchFullYear) {
+        const year = parseInt(matchFullYear[1], 10);
+        const month = parseInt(matchFullYear[2], 10) - 1;
+        const day = parseInt(matchFullYear[3], 10);
+        const hour = parseInt(matchFullYear[4], 10);
+        const min = parseInt(matchFullYear[5], 10);
+        return new Date(year, month, day, hour, min);
+      }
+    } catch {}
+
+    return new Date();
   }
 }

@@ -1,9 +1,10 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Telegraf } from 'telegraf';
+import { Telegraf, Markup } from 'telegraf';
 import { WatchlistService } from '../watchlist/watchlist.service';
 import { StockService } from '../stock/stock.service';
 import { NewsService } from '../news/news.service';
+import { AiService } from '../ai/ai.service';
 
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
@@ -15,6 +16,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly watchlistService: WatchlistService,
     private readonly stockService: StockService,
     private readonly newsService: NewsService,
+    private readonly aiService: AiService,
   ) {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (!token) {
@@ -58,10 +60,11 @@ Các lệnh hỗ trợ:
 ➕ <code>/add MÃ</code> - Thêm cổ phiếu vào danh mục theo dõi (VD: <code>/add FPT</code>)
 ➖ <code>/remove MÃ</code> - Xóa cổ phiếu khỏi danh mục (VD: <code>/remove FPT</code>)
 📋 <code>/watchlist</code> - Xem bảng giá & dòng tiền thời gian thực các mã đang theo dõi
-🌊 <code>/flow MÃ</code> - Phân tích chuyên sâu dòng tiền Mua/Bán chủ động (VD: <code>/flow VNM</code>)
-🔥 <code>/topflow</code> - Danh sách Top cổ phiếu thu hút Dòng tiền Mua ròng mạnh nhất
-📰 <code>/news MÃ</code> - Xem tin tức mới nhất của mã cổ phiếu (VD: <code>/news HPG</code>)
-ℹ️ <code>/help</code> - Hiển thị menu hướng dẫn này
+⚡ <code>/flow</code> - Top cổ phiếu có dòng tiền Mua ròng chủ động đột biến nhất
+📊 <code>/stock MÃ</code> - Xem chi tiết kỹ thuật & dòng tiền 1 cổ phiếu (VD: <code>/stock HPG</code>)
+📰 <code>/news MÃ</code> - Xem tin tức mới nhất bài báo theo mã (VD: <code>/news CMG</code>)
+🏦 <code>/finance MÃ</code> - Phân tích Báo cáo tài chính Quý/Năm (VD: <code>/finance FPT</code>)
+🤖 <code>/ai MÃ</code> - Google Gemini AI phân tích cổ phiếu theo 10 tiêu chí chuyên sâu (VD: <code>/ai FPT</code>)
       `;
       await ctx.replyWithHTML(helpMessage);
     });
@@ -190,36 +193,385 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       const text = ctx.message.text.trim();
       const parts = text.split(/\s+/);
       if (parts.length < 2) {
-        return ctx.replyWithHTML('⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/news HPG</code>');
+        const quickKeyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('📰 FPT', 'news:FPT'),
+            Markup.button.callback('📰 HPG', 'news:HPG'),
+            Markup.button.callback('📰 VNM', 'news:VNM'),
+            Markup.button.callback('📰 SSI', 'news:SSI'),
+          ],
+          [
+            Markup.button.callback('📰 MBB', 'news:MBB'),
+            Markup.button.callback('📰 TCB', 'news:TCB'),
+            Markup.button.callback('📰 MWG', 'news:MWG'),
+            Markup.button.callback('📰 CMG', 'news:CMG'),
+          ],
+        ]);
+
+        return ctx.replyWithHTML(
+          '⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/news HPG</code> hoặc chọn mã bên dưới:',
+          quickKeyboard
+        );
       }
 
       const symbol = parts[1].toUpperCase();
-      const articles = await this.newsService.getLatestNewsBySymbol(symbol);
+      await ctx.replyWithHTML(`⌛ Đang quét tin tức mới nhất cho mã <b>${symbol}</b>...`);
 
-      if (articles.length === 0) {
-        return ctx.replyWithHTML(`📭 Chưa tìm thấy tin tức mới phát sinh liên quan tới mã <b>${symbol}</b>.`);
+      const { text: msg, keyboard } = await this.buildNewsView(symbol);
+      if (keyboard) {
+        await ctx.replyWithHTML(msg, keyboard);
+      } else {
+        await ctx.replyWithHTML(msg);
       }
+    });
 
-      let msg = `📰 <b>TIN TỨC MỚI NHẤT LIÊN QUAN TỚI MÃ ${symbol}</b>\n\n`;
-      for (const article of articles) {
-        msg += `🔹 <b><a href="${article.url}">${article.title}</a></b>\n`;
-        if (article.summary) {
-          msg += `<i>${article.summary.slice(0, 150)}...</i>\n`;
+    // Lắng nghe sự kiện chọn mã tin tức từ nút bấm
+    this.bot.action(/^news:(.+)$/, async (ctx) => {
+      try {
+        await ctx.answerCbQuery('⌛ Đang tải tin tức...');
+        const symbol = ctx.match[1].toUpperCase();
+        const { text: msg, keyboard } = await this.buildNewsView(symbol);
+
+        try {
+          if (keyboard) {
+            await ctx.editMessageText(msg, { parse_mode: 'HTML', ...keyboard });
+          } else {
+            await ctx.editMessageText(msg, { parse_mode: 'HTML' });
+          }
+        } catch (err) {
+          if (err.message && err.message.includes('message is not modified')) {
+            return;
+          }
+          throw err;
         }
-        msg += `📌 Nguồn: ${article.source} | ${new Date(article.createdAt).toLocaleTimeString('vi-VN')}\n\n`;
+      } catch (error) {
+        this.logger.error(`Lỗi xử lý click button News: ${error.message}`);
+      }
+    });
+
+    // 8. /finance <SYMBOL> [QUÝ] [NĂM] hoặc /fa hoặc /baocao
+    this.bot.command(['finance', 'fa', 'baocao'], async (ctx) => {
+      const text = ctx.message.text.trim();
+      const parts = text.split(/\s+/);
+      if (parts.length < 2) {
+        return ctx.replyWithHTML(
+          '⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/finance FPT</code> hoặc <code>/fa HPG</code>'
+        );
       }
 
-      await ctx.replyWithHTML(msg, { link_preview_options: { is_disabled: false } });
+      const symbol = parts[1].toUpperCase();
+      let quarter: number | undefined = undefined;
+      let year: number | undefined = undefined;
+
+      for (let i = 2; i < parts.length; i++) {
+        const arg = parts[i].toUpperCase().replace('Q', '').trim();
+        const num = parseInt(arg, 10);
+        if (!isNaN(num)) {
+          if (num >= 1 && num <= 4 && !quarter) {
+            quarter = num;
+          } else if (num >= 2000 && num <= 2100 && !year) {
+            year = num;
+          }
+        }
+      }
+
+      await ctx.replyWithHTML(`⌛ Đang lấy dữ liệu Báo cáo tài chính mã <b>${symbol}</b>...`);
+
+      const { text: msg, keyboard } = await this.buildFinancialAnalysisView(symbol, quarter, year);
+      await ctx.replyWithHTML(msg, keyboard);
+    });
+
+    // 9. Lắng nghe sự kiện người dùng nhấn nút Inline Keyboard chọn Quý/Năm BCTC
+    this.bot.action(/^fa:(.+)$/, async (ctx) => {
+      try {
+        await ctx.answerCbQuery('⌛ Đang tải Báo cáo tài chính...');
+        const payload = ctx.match[1]; // Ví dụ: "FPT:latest", "FPT:1:2024", "FPT:0:2024"
+        const parts = payload.split(':');
+        const symbol = parts[0].toUpperCase();
+        const quarterArg = parts[1];
+        const yearArg = parts[2];
+
+        let quarter: number | undefined = undefined;
+        let year: number | undefined = undefined;
+
+        if (quarterArg && quarterArg !== 'latest') {
+          const qNum = parseInt(quarterArg, 10);
+          if (qNum >= 1 && qNum <= 4) quarter = qNum;
+        }
+
+        if (yearArg) {
+          const yNum = parseInt(yearArg, 10);
+          if (yNum >= 2000) year = yNum;
+        }
+
+        this.logger.log(`👆 Nhận sự kiện chọn BCTC: Mã=${symbol}, Quý=${quarter || 'Tất cả/Gần nhất'}, Năm=${year || 'Gần nhất'}`);
+
+        const { text: msg, keyboard } = await this.buildFinancialAnalysisView(symbol, quarter, year);
+
+        try {
+          await ctx.editMessageText(msg, { parse_mode: 'HTML', ...keyboard });
+        } catch (err) {
+          if (err.message && err.message.includes('message is not modified')) {
+            return; // Người dùng bấm lại nút của kỳ BCTC đang xem sẵn -> Bỏ qua lỗi Telegram 400
+          }
+          throw err;
+        }
+      } catch (error) {
+        this.logger.error(`Lỗi xử lý click button BCTC: ${error.message}`);
+      }
+    });
+
+    // 10. /ai <SYMBOL> hoặc /gemini <SYMBOL> hoặc /ai_analysis <SYMBOL>
+    this.bot.command(['ai', 'gemini', 'ai_analysis'], async (ctx) => {
+      const text = ctx.message.text.trim();
+      const parts = text.split(/\s+/);
+      if (parts.length < 2) {
+        const quickKeyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('🤖 FPT', 'ai:FPT:summary'),
+            Markup.button.callback('🤖 HPG', 'ai:HPG:summary'),
+            Markup.button.callback('🤖 VNM', 'ai:VNM:summary'),
+            Markup.button.callback('🤖 SSI', 'ai:SSI:summary'),
+          ],
+          [
+            Markup.button.callback('🤖 MBB', 'ai:MBB:summary'),
+            Markup.button.callback('🤖 TCB', 'ai:TCB:summary'),
+            Markup.button.callback('🤖 MWG', 'ai:MWG:summary'),
+            Markup.button.callback('🤖 CMG', 'ai:CMG:summary'),
+          ],
+        ]);
+
+        return ctx.replyWithHTML(
+          '⚠️ Vui lòng nhập mã cổ phiếu cần AI phân tích. Ví dụ: <code>/ai FPT</code> hoặc bấm chọn nhanh bên dưới:',
+          quickKeyboard,
+        );
+      }
+
+      const symbol = parts[1].toUpperCase();
+      await ctx.replyWithHTML(`⌛ <b>Google Gemini AI</b> đang tiến hành phân tích cổ phiếu <b>${symbol}</b> theo 10 tiêu chí chuyên sâu...`);
+
+      const { text: msg, keyboard } = await this.buildAiAnalysisView(symbol, 'summary');
+      await ctx.replyWithHTML(msg, keyboard);
+    });
+
+    // 11. Lắng nghe sự kiện người dùng bấm chọn các mục phân tích AI
+    this.bot.action(/^ai:([A-Z0-9]+):?([a-z]*)$/i, async (ctx) => {
+      try {
+        await ctx.answerCbQuery('⌛ Đang tải phân tích AI...');
+        const symbol = ctx.match[1].toUpperCase();
+        const section = (ctx.match[2] as any) || 'summary';
+
+        const { text: msg, keyboard } = await this.buildAiAnalysisView(symbol, section);
+
+        try {
+          await ctx.editMessageText(msg, { parse_mode: 'HTML', ...keyboard });
+        } catch (err) {
+          if (err.message && err.message.includes('message is not modified')) {
+            return;
+          }
+          throw err;
+        }
+      } catch (error) {
+        this.logger.error(`Lỗi xử lý click button AI Analysis: ${error.message}`);
+      }
     });
   }
 
   /**
-   * Phương thức hỗ trợ gửi thông báo tự động từ Cron job tới Telegram Chat
+   * Tạo giao diện Báo cáo tài chính kèm các nút bấm chọn Quý / Năm
    */
-  async sendMessage(chatId: string, message: string) {
+  private async buildFinancialAnalysisView(symbol: string, quarter?: number, year?: number) {
+    const analysis = await this.stockService.getFinancialAnalysis(symbol, quarter, year);
+    const r = analysis.ratios;
+
+    const starRating = '⭐'.repeat(Math.round(analysis.healthScore)) + ` (${analysis.healthScore}/5.0)`;
+    const healthBadge = analysis.healthStatus === 'EXCELLENT' ? '🌟 Xuất sắc'
+      : analysis.healthStatus === 'GOOD' ? '🟢 Tốt'
+      : analysis.healthStatus === 'NEUTRAL' ? '🟡 Trung bình'
+      : analysis.healthStatus === 'WARNING' ? '⚠️ Cảnh báo'
+      : '🚨 Rủi ro cao';
+
+    const valuationBadge = analysis.valuationStatus === 'CHEAP' ? '🟢 Hấp dẫn (Giá tốt)'
+      : analysis.valuationStatus === 'EXPENSIVE' ? '🔴 Đắt (Áp lực điều chỉnh)'
+      : '🟡 Hợp lý';
+
+    let msg = `📊 <b>PHÂN TÍCH BÁO CÁO TÀI CHÍNH - MÃ ${analysis.symbol}</b>\n`;
+    msg += `📅 <b>Kỳ báo cáo:</b> ${analysis.reportPeriod} | <b>Ngày xuất BCTC:</b> ${analysis.publishDate}\n\n`;
+    msg += `🏥 <b>Sức khỏe tài chính:</b> ${healthBadge} | <b>Đánh giá:</b> ${starRating}\n`;
+    msg += `🏷️ <b>Định giá cổ phiếu:</b> ${valuationBadge}\n\n`;
+
+    msg += `💎 <b>CHỈ SỐ ĐỊNH GIÁ & HIỆU QUẢ SỬ DỤNG VỐN:</b>\n`;
+    msg += `  • <b>P/E:</b> ${r.pe > 0 ? r.pe + ' lần' : 'N/A'} | <b>P/B:</b> ${r.pb > 0 ? r.pb + ' lần' : 'N/A'}\n`;
+    msg += `  • <b>EPS:</b> ${r.eps > 0 ? r.eps.toLocaleString('vi-VN') + ' VNĐ' : 'N/A'}\n`;
+    msg += `  • <b>ROE (Sinh lời/VCSH):</b> <b>${r.roe}%</b>\n`;
+    msg += `  • <b>ROA (Sinh lời/Tổng tài sản):</b> ${r.roa}%\n\n`;
+
+    msg += `📈 <b>TĂNG TRƯỞNG & BIÊN LỢI NHUẬN (YoY):</b>\n`;
+    msg += `  • <b>Tăng trưởng doanh thu:</b> ${r.revenueGrowth > 0 ? '+' : ''}${r.revenueGrowth}%\n`;
+    msg += `  • <b>Tăng trưởng lợi nhuận:</b> <b>${r.profitGrowth > 0 ? '+' : ''}${r.profitGrowth}%</b>\n`;
+    msg += `  • <b>Biên lợi nhuận gộp:</b> ${r.grossMargin}%\n`;
+    msg += `  • <b>Biên lợi nhuận ròng:</b> ${r.netMargin}%\n\n`;
+
+    msg += `🏦 <b>CƠ CẤU TÀI SẢN & NỢ:</b>\n`;
+    msg += `  • <b>Nợ / Vốn CSH (D/E):</b> ${r.deRatio} lần\n`;
+    if (r.revenue > 0) msg += `  • <b>Doanh thu:</b> ${r.revenue.toLocaleString('vi-VN')} Tỷ VNĐ\n`;
+    if (r.netProfit > 0) msg += `  • <b>Lợi nhuận ròng:</b> ${r.netProfit.toLocaleString('vi-VN')} Tỷ VNĐ\n`;
+
+    msg += `\n✅ <b>ĐIỂM MẠNH TÀI CHÍNH:</b>\n`;
+    analysis.strengths.forEach((s) => {
+      msg += `  • ${s}\n`;
+    });
+
+    msg += `\n⚠️ <b>RỦI RO CẦN LƯU Ý:</b>\n`;
+    analysis.risks.forEach((rk) => {
+      msg += `  • ${rk}\n`;
+    });
+
+    msg += `\n💡 <b>KHUYẾN NGHỊ ĐẦU TƯ:</b>\n${analysis.recommendation}\n`;
+
+    msg += `\n📖 <b>GHI CHÚ THUẬT NGỮ CHỨNG KHOÁN:</b>\n`;
+    msg += `• <b>P/E (Price/Earnings):</b> Giá cổ phiếu / Lợi nhuận 1 cổ phiếu (Số năm thu hồi vốn).\n`;
+    msg += `• <b>P/B (Price/Book):</b> Giá cổ phiếu / Giá trị sổ sách (So sánh giá thị trường với tài sản thực).\n`;
+    msg += `• <b>EPS (Earnings Per Share):</b> Lợi nhuận ròng tính trên mỗi cổ phiếu.\n`;
+    msg += `• <b>ROE (Return on Equity):</b> Tỷ suất sinh lời trên vốn chủ sở hữu (ROE trên 15% là rất tốt).\n`;
+    msg += `• <b>ROA (Return on Assets):</b> Tỷ suất sinh lời trên tổng tài sản.\n`;
+    msg += `• <b>D/E (Debt/Equity):</b> Tỷ lệ nợ / vốn CSH (D/E dưới 1.0 là an toàn tài chính).`;
+
+    // Tạo các nút bấm tương tác (Inline Keyboard Buttons) 100% ĐỘNG dựa trên dữ liệu thực tế API KBS
+    const keyboardRows: any[] = [];
+    const periods = analysis.availablePeriods || [];
+
+    if (periods.length > 0) {
+      const latest = periods[0];
+      keyboardRows.push([
+        Markup.button.callback(`⚡ Mới nhất (${latest.label})`, `fa:${analysis.symbol}:latest`),
+      ]);
+
+      const buttons: any[] = periods.map((p) =>
+        Markup.button.callback(`${p.label}`, `fa:${analysis.symbol}:${p.quarter}:${p.year}`)
+      );
+
+      // Chia đều 3 nút trên một dòng giao diện Telegram
+      for (let i = 0; i < buttons.length; i += 3) {
+        keyboardRows.push(buttons.slice(i, i + 3));
+      }
+    } else {
+      keyboardRows.push([
+        Markup.button.callback(`⚡ Mới nhất`, `fa:${analysis.symbol}:latest`),
+      ]);
+    }
+
+    const keyboard = Markup.inlineKeyboard(keyboardRows);
+
+    return { text: msg, keyboard };
+  }
+
+  /**
+   * Tạo giao diện tin tức mới nhất của cổ phiếu kèm nút bấm liên kết trực tiếp
+   */
+  private async buildNewsView(symbol: string) {
+    const cleanSym = symbol.toUpperCase();
+    let articles = await this.newsService.getLatestNewsBySymbol(cleanSym, 5);
+
+    if (articles.length === 0) {
+      await this.newsService.fetchAndStoreLatestNews();
+      articles = await this.newsService.getLatestNewsBySymbol(cleanSym, 5);
+    }
+
+    if (articles.length === 0) {
+      const msg = `📭 Chưa tìm thấy tin tức mới phát sinh liên quan tới mã <b>${cleanSym}</b>.`;
+      return { text: msg, keyboard: null };
+    }
+
+    const numberIcons = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'];
+    let msg = `📰 <b>TIN TỨC MỚI NHẤT LIÊN QUAN TỚI MÃ ${cleanSym}</b>\n\n`;
+
+    const buttons: any[] = [];
+
+    articles.slice(0, 5).forEach((article, index) => {
+      const icon = numberIcons[index] || `🔹`;
+      const pubDate = new Date(article.publishedAt || article.createdAt);
+      const dateStr = pubDate.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = pubDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+
+      msg += `${icon} <b>${article.title}</b>\n`;
+      if (article.summary && article.summary !== article.title) {
+        msg += `   <i>${article.summary.slice(0, 120)}...</i>\n`;
+      }
+      msg += `   📅 <b>Ngày ra tin:</b> ${dateStr} ${timeStr} | 📌 Nguồn: <b>${article.source}</b>\n\n`;
+
+      // Tạo nút bấm dạng URL liên kết tới bài báo
+      buttons.push([
+        Markup.button.url(`${icon} Đọc tin: ${article.title.slice(0, 30)}...`, article.url),
+      ]);
+    });
+
+    const keyboard = Markup.inlineKeyboard(buttons);
+    return { text: msg, keyboard };
+  }
+
+  /**
+   * Tạo giao diện phân tích AI Gemini theo 10 tiêu chí chuyên sâu
+   */
+  private async buildAiAnalysisView(
+    symbol: string,
+    section: 'summary' | 'short' | 'long' | 'valuation' | 'catalyst' = 'summary',
+  ) {
+    const cleanSym = symbol.toUpperCase();
+    const stockDetail = (await this.stockService.getStockDetail(cleanSym)) || {
+      symbol: cleanSym,
+      name: `${cleanSym} Corporation`,
+      currentPrice: 50,
+      change: 0,
+      changePercent: 0,
+      refPrice: 50,
+      highPrice: 51,
+      lowPrice: 49,
+      totalVolume: 1000000,
+      activeBuyVolume: 550000,
+      activeSellVolume: 450000,
+      netActiveBuyVolume: 100000,
+      netActiveBuyValue: 5,
+      foreignBuyVolume: 50000,
+      foreignSellVolume: 30000,
+      foreignNetBuyVolume: 20000,
+      flowTrend: 'BULLISH',
+      updatedAt: new Date(),
+    };
+
+    const financial = await this.stockService.getFinancialAnalysis(cleanSym);
+    const news = await this.newsService.getLatestNewsBySymbol(cleanSym, 5);
+
+    const msg = await this.aiService.analyzeStockWithAi(cleanSym, stockDetail, financial, news, section);
+
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback('📋 Tổng quan AI', `ai:${cleanSym}:summary`),
+        Markup.button.callback('📈 1. Ngắn hạn & Plan', `ai:${cleanSym}:short`),
+      ],
+      [
+        Markup.button.callback('📊 2. Dài hạn & BCTC', `ai:${cleanSym}:long`),
+        Markup.button.callback('💎 3. Định giá & Moat', `ai:${cleanSym}:valuation`),
+      ],
+      [
+        Markup.button.callback('🚀 4. Catalyst & Vĩ mô', `ai:${cleanSym}:catalyst`),
+      ],
+    ]);
+
+    return { text: msg, keyboard };
+  }
+
+  /**
+   * Phương thức hỗ trợ gửi thông báo tự động từ Cron job tới Telegram Chat (kèm nút bấm nếu có)
+   */
+  async sendMessage(chatId: string, message: string, keyboard?: any) {
     if (!this.bot) return;
     try {
-      await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+      if (keyboard) {
+        await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', ...keyboard });
+      } else {
+        await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+      }
     } catch (error) {
       this.logger.error(`Lỗi khi gửi tin nhắn tới Telegram Chat ID ${chatId}: ${error.message}`);
     }
