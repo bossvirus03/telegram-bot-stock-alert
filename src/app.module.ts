@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Controller, Get, Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './prisma/prisma.module';
@@ -8,6 +8,16 @@ import { WatchlistModule } from './watchlist/watchlist.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { CronModule } from './cron/cron.module';
 import { AiModule } from './ai/ai.module';
+
+@Controller()
+class HelloController {
+  @Get()
+  hello() {
+    return {
+      message: 'Hello World',
+    };
+  }
+}
 
 @Module({
   imports: [
@@ -21,5 +31,6 @@ import { AiModule } from './ai/ai.module';
     CronModule,
     AiModule,
   ],
+  controllers: [HelloController],
 })
 export class AppModule {}
