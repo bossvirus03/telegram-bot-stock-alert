@@ -137,23 +137,14 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
         // 1. DÒNG TIỀN MUA LỚN VÀO (Mua ròng >= 3.0 Tỷ VNĐ)
         if (currentNetValue >= 3.0 && (currentNetValue - prevNetValue >= 1.5 || prevNetValue === 0)) {
           const alertMessage = `
-⚡ <b>DÒNG TIỀN LỚN MUA VÀO TỨC THÌ - ${symbol}</b>
+⚡ <b>PHÁT HIỆN DÒNG TIỀN MUA VÀO - ${symbol}</b>
 
-🟢 <b>Mã:</b> ${symbol} | <b>Giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
-🔥 <b>Dòng tiền Mua ròng CĐ:</b> <b>+${currentNetValue} Tỷ VNĐ</b>
-
-📊 <b>CHI TIẾT GIAO DỊCH CHỦ ĐỘNG:</b>
-🛒 <b>LỆNH MUA CĐ:</b> <b>${detail.activeBuyVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${buyValueBillion} Tỷ VNĐ</b> (${buyPct}% KLGD)
-🔻 <b>LỆNH BÁN CĐ:</b> <b>${detail.activeSellVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${sellValueBillion} Tỷ VNĐ</b> (${sellPct}% KLGD)
-📈 <b>Tổng KLGD:</b> ${detail.totalVolume.toLocaleString('vi-VN')} CP ≈ ${totalValueBillion} Tỷ VNĐ
-
-🏛️ <b>KHỐI NGOẠI:</b>
-  • Mua: ${detail.foreignBuyVolume.toLocaleString('vi-VN')} CP ≈ ${foreignBuyValBillion} Tỷ
-  • Bán: ${detail.foreignSellVolume.toLocaleString('vi-VN')} CP ≈ ${foreignSellValBillion} Tỷ
-  • Ròng: <b>${detail.foreignNetBuyVolume > 0 ? '+' : ''}${detail.foreignNetBuyVolume.toLocaleString('vi-VN')} CP</b>
-
-⚡ <i>Tín hiệu realtime: Tiền lớn vừa bơm mạnh vào cổ phiếu ${symbol}!</i>
-          `;
+🟢 <b>Mã CP:</b> <b>${symbol}</b>
+💵 <b>Giá trị giao dịch:</b> <b>${buyValueBillion >= 1 ? `${buyValueBillion} Tỷ VNĐ` : `${(buyValueBillion * 1000).toFixed(0)} Triệu VNĐ`}</b>
+📦 <b>Khối lượng Mua:</b> <b>${detail.activeBuyVolume.toLocaleString('vi-VN')} CP</b>
+🏷️ <b>Mức giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
+🔥 <b>Dòng tiền Mua ròng:</b> <b>+${currentNetValue} Tỷ VNĐ</b>
+          `.trim();
 
           await this.telegramService.sendMessage(user.chatId, alertMessage);
           this.lastNotifiedFlowMap.set(mapKey, currentNetValue);
@@ -162,23 +153,14 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
         // 2. DÒNG TIỀN BÁN LỚN XẢ OUT (Bán ròng <= -3.0 Tỷ VNĐ)
         else if (currentNetValue <= -3.0 && (currentNetValue - prevNetValue <= -1.5 || prevNetValue === 0)) {
           const alertMessage = `
-🚨 <b>DÒNG TIỀN LỚN BÁN THÁO TỨC THÌ - ${symbol}</b>
+🚨 <b>PHÁT HIỆN DÒNG TIỀN BÁN XẢ - ${symbol}</b>
 
-🔴 <b>Mã:</b> ${symbol} | <b>Giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
-💥 <b>Dòng tiền Bán ròng CĐ:</b> <b>${currentNetValue} Tỷ VNĐ</b>
-
-📊 <b>CHI TIẾT GIAO DỊCH CHỦ ĐỘNG:</b>
-🔻 <b>LỆNH BÁN CĐ:</b> <b>${detail.activeSellVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${sellValueBillion} Tỷ VNĐ</b> (${sellPct}% KLGD)
-🛒 <b>LỆNH MUA CĐ:</b> <b>${detail.activeBuyVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${buyValueBillion} Tỷ VNĐ</b> (${buyPct}% KLGD)
-📈 <b>Tổng KLGD:</b> ${detail.totalVolume.toLocaleString('vi-VN')} CP ≈ ${totalValueBillion} Tỷ VNĐ
-
-🏛️ <b>KHỐI NGOẠI:</b>
-  • Mua: ${detail.foreignBuyVolume.toLocaleString('vi-VN')} CP ≈ ${foreignBuyValBillion} Tỷ
-  • Bán: ${detail.foreignSellVolume.toLocaleString('vi-VN')} CP ≈ ${foreignSellValBillion} Tỷ
-  • Ròng: <b>${detail.foreignNetBuyVolume > 0 ? '+' : ''}${detail.foreignNetBuyVolume.toLocaleString('vi-VN')} CP</b>
-
-⚠️ <i>Tín hiệu realtime: Áp lực bán lớn vừa xả tháo chạy khỏi ${symbol}!</i>
-          `;
+🔴 <b>Mã CP:</b> <b>${symbol}</b>
+💸 <b>Giá trị giao dịch:</b> <b>${sellValueBillion >= 1 ? `${sellValueBillion} Tỷ VNĐ` : `${(sellValueBillion * 1000).toFixed(0)} Triệu VNĐ`}</b>
+📦 <b>Khối lượng Bán:</b> <b>${detail.activeSellVolume.toLocaleString('vi-VN')} CP</b>
+🏷️ <b>Mức giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
+💥 <b>Dòng tiền Bán ròng:</b> <b>${currentNetValue} Tỷ VNĐ</b>
+          `.trim();
 
           await this.telegramService.sendMessage(user.chatId, alertMessage);
           this.lastNotifiedFlowMap.set(mapKey, currentNetValue);
