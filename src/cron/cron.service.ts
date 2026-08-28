@@ -125,16 +125,32 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
         const prevNetValue = this.lastNotifiedFlowMap.get(mapKey) ?? 0;
         const currentNetValue = detail.netActiveBuyValue;
 
+        // Tính giá trị tiền cho lệnh mua và bán chủ động (đơn vị: Tỷ VNĐ)
+        const buyValueBillion = Number(((detail.activeBuyVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2));
+        const sellValueBillion = Number(((detail.activeSellVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2));
+        const totalValueBillion = Number((buyValueBillion + sellValueBillion).toFixed(2));
+        const buyPct = detail.totalVolume > 0 ? ((detail.activeBuyVolume / detail.totalVolume) * 100).toFixed(1) : '0';
+        const sellPct = detail.totalVolume > 0 ? ((detail.activeSellVolume / detail.totalVolume) * 100).toFixed(1) : '0';
+        const foreignBuyValBillion = Number(((detail.foreignBuyVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2));
+        const foreignSellValBillion = Number(((detail.foreignSellVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2));
+
         // 1. DÒNG TIỀN MUA LỚN VÀO (Mua ròng >= 3.0 Tỷ VNĐ)
         if (currentNetValue >= 3.0 && (currentNetValue - prevNetValue >= 1.5 || prevNetValue === 0)) {
           const alertMessage = `
 ⚡ <b>DÒNG TIỀN LỚN MUA VÀO TỨC THÌ - ${symbol}</b>
 
 🟢 <b>Mã:</b> ${symbol} | <b>Giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
-🔥 <b>Dòng tiền Mua ròng chủ động:</b> <b>+${currentNetValue} Tỷ VNĐ</b>
-🛒 <b>Khối lượng Mua CĐ:</b> ${(detail.activeBuyVolume / 1000).toFixed(0)}k CP
-🔻 <b>Khối lượng Bán CĐ:</b> ${(detail.activeSellVolume / 1000).toFixed(0)}k CP
-🏛️ <b>Khối ngoại:</b> ${detail.foreignNetBuyVolume > 0 ? 'Mua ròng' : 'Bán ròng'} ${Math.abs(Math.round(detail.foreignNetBuyVolume / 1000))}k CP
+🔥 <b>Dòng tiền Mua ròng CĐ:</b> <b>+${currentNetValue} Tỷ VNĐ</b>
+
+📊 <b>CHI TIẾT GIAO DỊCH CHỦ ĐỘNG:</b>
+🛒 <b>LỆNH MUA CĐ:</b> <b>${detail.activeBuyVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${buyValueBillion} Tỷ VNĐ</b> (${buyPct}% KLGD)
+🔻 <b>LỆNH BÁN CĐ:</b> <b>${detail.activeSellVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${sellValueBillion} Tỷ VNĐ</b> (${sellPct}% KLGD)
+📈 <b>Tổng KLGD:</b> ${detail.totalVolume.toLocaleString('vi-VN')} CP ≈ ${totalValueBillion} Tỷ VNĐ
+
+🏛️ <b>KHỐI NGOẠI:</b>
+  • Mua: ${detail.foreignBuyVolume.toLocaleString('vi-VN')} CP ≈ ${foreignBuyValBillion} Tỷ
+  • Bán: ${detail.foreignSellVolume.toLocaleString('vi-VN')} CP ≈ ${foreignSellValBillion} Tỷ
+  • Ròng: <b>${detail.foreignNetBuyVolume > 0 ? '+' : ''}${detail.foreignNetBuyVolume.toLocaleString('vi-VN')} CP</b>
 
 ⚡ <i>Tín hiệu realtime: Tiền lớn vừa bơm mạnh vào cổ phiếu ${symbol}!</i>
           `;
@@ -149,10 +165,17 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
 🚨 <b>DÒNG TIỀN LỚN BÁN THÁO TỨC THÌ - ${symbol}</b>
 
 🔴 <b>Mã:</b> ${symbol} | <b>Giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
-💥 <b>Dòng tiền Bán ròng chủ động:</b> <b>${currentNetValue} Tỷ VNĐ</b>
-🔻 <b>Khối lượng Bán CĐ:</b> ${(detail.activeSellVolume / 1000).toFixed(0)}k CP
-🛒 <b>Khối lượng Mua CĐ:</b> ${(detail.activeBuyVolume / 1000).toFixed(0)}k CP
-🏛️ <b>Khối ngoại:</b> ${detail.foreignNetBuyVolume > 0 ? 'Mua ròng' : 'Bán ròng'} ${Math.abs(Math.round(detail.foreignNetBuyVolume / 1000))}k CP
+💥 <b>Dòng tiền Bán ròng CĐ:</b> <b>${currentNetValue} Tỷ VNĐ</b>
+
+📊 <b>CHI TIẾT GIAO DỊCH CHỦ ĐỘNG:</b>
+🔻 <b>LỆNH BÁN CĐ:</b> <b>${detail.activeSellVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${sellValueBillion} Tỷ VNĐ</b> (${sellPct}% KLGD)
+🛒 <b>LỆNH MUA CĐ:</b> <b>${detail.activeBuyVolume.toLocaleString('vi-VN')} CP</b> ≈ <b>${buyValueBillion} Tỷ VNĐ</b> (${buyPct}% KLGD)
+📈 <b>Tổng KLGD:</b> ${detail.totalVolume.toLocaleString('vi-VN')} CP ≈ ${totalValueBillion} Tỷ VNĐ
+
+🏛️ <b>KHỐI NGOẠI:</b>
+  • Mua: ${detail.foreignBuyVolume.toLocaleString('vi-VN')} CP ≈ ${foreignBuyValBillion} Tỷ
+  • Bán: ${detail.foreignSellVolume.toLocaleString('vi-VN')} CP ≈ ${foreignSellValBillion} Tỷ
+  • Ròng: <b>${detail.foreignNetBuyVolume > 0 ? '+' : ''}${detail.foreignNetBuyVolume.toLocaleString('vi-VN')} CP</b>
 
 ⚠️ <i>Tín hiệu realtime: Áp lực bán lớn vừa xả tháo chạy khỏi ${symbol}!</i>
           `;

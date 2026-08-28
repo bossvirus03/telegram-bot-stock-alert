@@ -348,9 +348,22 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       }
 
       const symbol = parts[1].toUpperCase();
-      await ctx.replyWithHTML(`⌛ <b>Google Gemini AI</b> đang tiến hành phân tích cổ phiếu <b>${symbol}</b> theo 10 tiêu chí chuyên sâu...`);
+      await ctx.replyWithHTML(`⌛ <b>Google Gemini AI</b> đang phân tích cổ phiếu <b>${symbol}</b> với dữ liệu kỹ thuật thực tế...\n📊 Đang lấy dữ liệu lịch sử + tính RSI, MACD, MA, Support/Resistance...\n🎨 Đang vẽ biểu đồ giá...`);
 
-      const { text: msg, keyboard } = await this.buildAiAnalysisView(symbol, 'summary');
+      const { text: msg, keyboard, chartUrl } = await this.buildAiAnalysisView(symbol, 'summary');
+
+      // Gửi ảnh biểu đồ trước
+      if (chartUrl) {
+        try {
+          await ctx.replyWithPhoto({ url: chartUrl }, {
+            caption: `📊 Biểu đồ giá ${symbol} (60 phiên) | MA20 | MA50 | Bollinger Bands\n🎯 Điểm mua an toàn & Stop Loss đã đánh dấu trên chart`,
+          });
+        } catch (chartErr) {
+          this.logger.error(`Lỗi gửi biểu đồ ${symbol}: ${chartErr.message}`);
+        }
+      }
+
+      // Gửi text phân tích
       await ctx.replyWithHTML(msg, keyboard);
     });
 
@@ -361,7 +374,18 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
         const symbol = ctx.match[1].toUpperCase();
         const section = (ctx.match[2] as any) || 'summary';
 
-        const { text: msg, keyboard } = await this.buildAiAnalysisView(symbol, section);
+        const { text: msg, keyboard, chartUrl } = await this.buildAiAnalysisView(symbol, section);
+
+        // Nếu là summary và có chart, gửi ảnh mới
+        if (section === 'summary' && chartUrl) {
+          try {
+            await ctx.replyWithPhoto({ url: chartUrl }, {
+              caption: `📊 Biểu đồ giá ${symbol} (60 phiên) | MA20 | MA50 | Bollinger Bands`,
+            });
+          } catch (chartErr) {
+            this.logger.debug(`Không gửi được biểu đồ cập nhật: ${chartErr.message}`);
+          }
+        }
 
         try {
           await ctx.editMessageText(msg, { parse_mode: 'HTML', ...keyboard });
@@ -369,7 +393,12 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
           if (err.message && err.message.includes('message is not modified')) {
             return;
           }
-          throw err;
+          // Nếu không edit được (message quá cũ), gửi message mới
+          try {
+            await ctx.replyWithHTML(msg, keyboard);
+          } catch (replyErr) {
+            this.logger.error(`Không gửi được tin nhắn: ${replyErr.message}`);
+          }
         }
       } catch (error) {
         this.logger.error(`Lỗi xử lý click button AI Analysis: ${error.message}`);
@@ -512,53 +541,48 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
 
   /**
    * Tạo giao diện phân tích AI Gemini theo 10 tiêu chí chuyên sâu
+   * Với dữ liệu kỹ thuật THỰC TẾ + biểu đồ giá
    */
   private async buildAiAnalysisView(
     symbol: string,
     section: 'summary' | 'short' | 'long' | 'valuation' | 'catalyst' = 'summary',
   ) {
     const cleanSym = symbol.toUpperCase();
-    const stockDetail = (await this.stockService.getStockDetail(cleanSym)) || {
-      symbol: cleanSym,
-      name: `${cleanSym} Corporation`,
-      currentPrice: 50,
-      change: 0,
-      changePercent: 0,
-      refPrice: 50,
-      highPrice: 51,
-      lowPrice: 49,
-      totalVolume: 1000000,
-      activeBuyVolume: 550000,
-      activeSellVolume: 450000,
-      netActiveBuyVolume: 100000,
-      netActiveBuyValue: 5,
-      foreignBuyVolume: 50000,
-      foreignSellVolume: 30000,
-      foreignNetBuyVolume: 20000,
-      flowTrend: 'BULLISH',
-      updatedAt: new Date(),
-    };
 
-    const financial = await this.stockService.getFinancialAnalysis(cleanSym);
+    // 1. Lấy phân tích toàn diện (giá lịch sử + kỹ thuật + tài chính + chart)
+    const fullAnalysis = await this.stockService.getFullAnalysis(cleanSym);
+
+    // 2. Lấy tin tức
     const news = await this.newsService.getLatestNewsBySymbol(cleanSym, 5);
 
-    const msg = await this.aiService.analyzeStockWithAi(cleanSym, stockDetail, financial, news, section);
+    // 3. Gọi AI phân tích với dữ liệu kỹ thuật thực tế
+    const msg = await this.aiService.analyzeStockWithAi(
+      cleanSym,
+      fullAnalysis.stockDetail,
+      fullAnalysis.financial,
+      news,
+      fullAnalysis.technicals,
+      fullAnalysis.safeBuy,
+      fullAnalysis.scenarios,
+      section,
+    );
 
+    // 4. Tạo keyboard
     const keyboard = Markup.inlineKeyboard([
       [
         Markup.button.callback('📋 Tổng quan AI', `ai:${cleanSym}:summary`),
-        Markup.button.callback('📈 1. Ngắn hạn & Plan', `ai:${cleanSym}:short`),
+        Markup.button.callback('📈 Ngắn hạn & Plan', `ai:${cleanSym}:short`),
       ],
       [
-        Markup.button.callback('📊 2. Dài hạn & BCTC', `ai:${cleanSym}:long`),
-        Markup.button.callback('💎 3. Định giá & Moat', `ai:${cleanSym}:valuation`),
+        Markup.button.callback('📊 Dài hạn & BCTC', `ai:${cleanSym}:long`),
+        Markup.button.callback('💎 Định giá & Moat', `ai:${cleanSym}:valuation`),
       ],
       [
-        Markup.button.callback('🚀 4. Catalyst & Vĩ mô', `ai:${cleanSym}:catalyst`),
+        Markup.button.callback('🚀 Catalyst & Vĩ mô', `ai:${cleanSym}:catalyst`),
       ],
     ]);
 
-    return { text: msg, keyboard };
+    return { text: msg, keyboard, chartUrl: fullAnalysis.chartUrl };
   }
 
   /**
@@ -574,6 +598,21 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       }
     } catch (error) {
       this.logger.error(`Lỗi khi gửi tin nhắn tới Telegram Chat ID ${chatId}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Gửi ảnh kèm caption tới Telegram chat
+   */
+  async sendPhoto(chatId: string, photoUrl: string, caption?: string) {
+    if (!this.bot) return;
+    try {
+      await this.bot.telegram.sendPhoto(chatId, { url: photoUrl }, {
+        caption: caption || '',
+        parse_mode: 'HTML',
+      });
+    } catch (error) {
+      this.logger.error(`Lỗi khi gửi ảnh tới Telegram Chat ID ${chatId}: ${error.message}`);
     }
   }
 }

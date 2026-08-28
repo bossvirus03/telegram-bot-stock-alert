@@ -66,3 +66,59 @@ export interface FinancialAnalysis {
   availablePeriods?: AvailablePeriod[];
   updatedAt: Date;
 }
+
+export interface OHLCV {
+  date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export interface TechnicalIndicators {
+  ma20: number;
+  ma50: number;
+  ma200: number;
+  rsi14: number;
+  macd: { macd: number; signal: number; histogram: number };
+  bollingerBands: { upper: number; middle: number; lower: number };
+  support: number[];
+  resistance: number[];
+  volumeMA20: number;
+  currentVolumeRatio: number; // volume hiện tại / MA20 volume
+  trend: 'UPTREND' | 'DOWNTREND' | 'SIDEWAYS';
+  trendStrength: 'STRONG' | 'MODERATE' | 'WEAK';
+  signals: string[]; // Các tín hiệu kỹ thuật đáng chú ý
+}
+
+export interface SafeBuyZone {
+  idealBuyPrice: number;
+  safeBuyRange: { min: number; max: number };
+  targetShortTerm: number;  // Mục tiêu 1-4 tuần
+  targetLongTerm: number;   // Mục tiêu 3-12 tháng
+  stopLoss: number;
+  riskRewardShort: number;
+  riskRewardLong: number;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  reasons: string[];
+}
+
+export interface ScenarioModel {
+  bullCase: { targetPrice: number; probability: number; description: string };
+  baseCase: { targetPrice: number; probability: number; description: string };
+  bearCase: { targetPrice: number; probability: number; description: string };
+}
+
+export interface FullAnalysis {
+  symbol: string;
+  stockDetail: StockDetail;
+  financial: FinancialAnalysis;
+  technicals: TechnicalIndicators;
+  safeBuy: SafeBuyZone;
+  scenarios: ScenarioModel;
+  priceHistory: OHLCV[];
+  chartUrl: string;
+  shortTermOutlook: string;
+  longTermOutlook: string;
+}
