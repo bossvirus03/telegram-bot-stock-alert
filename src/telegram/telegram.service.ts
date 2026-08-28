@@ -11,6 +11,15 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TelegramService.name);
   private bot: Telegraf;
 
+  // Bộ nhớ đệm lưu trữ các tin nhắn hội thoại để liên kết ngữ cảnh khi reply (tối đa 500 tin nhắn gần nhất)
+  private readonly chatHistoryStore = new Map<number, {
+    messageId: number;
+    chatId: string;
+    role: 'user' | 'model';
+    text: string;
+    replyToMessageId?: number;
+  }>();
+
   constructor(
     private readonly configService: ConfigService,
     private readonly watchlistService: WatchlistService,
@@ -56,15 +65,24 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const helpMessage = `
 📈 <b>CHÀO MỪNG ĐẾN VỚI BOT PHÂN TÍCH & DÒNG TIỀN CHỨNG KHOÁN VN</b> 🇻🇳
 
-Các lệnh hỗ trợ:
+🏛️ <b>PHÂN TÍCH TOÀN DIỆN MÃ CỔ PHIẾU:</b>
+• Dùng lệnh <code>/analysis MÃ</code> (VD: <code>/analysis SSI</code> hoặc <code>/analysis FPT</code>)
+  <i>👉 Bot tự động bóc tách tin tức báo chí mới nhất, phân tích bối cảnh vĩ mô, dòng vốn quỹ ngoại ETF, game doanh nghiệp, BCTC, chỉ số tài chính, ban lãnh đạo & điểm mua kỹ thuật!</i>
+
+🤖 <b>TRÒ CHUYỆN & HỎI ĐÁP VỚI GEMINI AI:</b>
+• Dùng lệnh <code>/ai CÂU_HỎI</code> (VD: <code>/ai FPT mua vùng giá này được không?</code> hoặc <code>/ai HPG</code>)
+• Sau đó chỉ cần <b>Reply (Trả lời)</b> trực tiếp tin nhắn của Bot để tiếp tục cuộc trò chuyện chuyên sâu với đầy đủ ngữ cảnh!
+
+📋 <b>CÁC LỆNH TÍNH NĂNG NHANH:</b>
+🏛️ <code>/analysis MÃ</code> - Báo cáo phân tích toàn diện 7 trụ cột (VD: <code>/analysis SSI</code>)
 ➕ <code>/add MÃ</code> - Thêm cổ phiếu vào danh mục theo dõi (VD: <code>/add FPT</code>)
 ➖ <code>/remove MÃ</code> - Xóa cổ phiếu khỏi danh mục (VD: <code>/remove FPT</code>)
-📋 <code>/watchlist</code> - Xem bảng giá & dòng tiền thời gian thực các mã đang theo dõi
-⚡ <code>/flow</code> - Top cổ phiếu có dòng tiền Mua ròng chủ động đột biến nhất
-📊 <code>/stock MÃ</code> - Xem chi tiết kỹ thuật & dòng tiền 1 cổ phiếu (VD: <code>/stock HPG</code>)
-📰 <code>/news MÃ</code> - Xem tin tức mới nhất bài báo theo mã (VD: <code>/news CMG</code>)
+📋 <code>/watchlist</code> - Bảng giá & dòng tiền thời gian thực danh mục đang theo dõi
+📊 <code>/stock MÃ</code> - Tổng quan kỹ thuật & điểm mua cổ phiếu (VD: <code>/stock HPG</code>)
+🌊 <code>/flow MÃ</code> - Phân tích chi tiết dòng tiền Mua/Bán chủ động (VD: <code>/flow FPT</code>)
+🔥 <code>/topflow</code> - Top cổ phiếu có dòng tiền Mua ròng đột biến toàn thị trường
+📰 <code>/news MÃ</code> - Tin tức bài báo mới nhất theo mã (VD: <code>/news CMG</code>)
 🏦 <code>/finance MÃ</code> - Phân tích Báo cáo tài chính Quý/Năm (VD: <code>/finance FPT</code>)
-🤖 <code>/ai MÃ</code> - Google Gemini AI phân tích cổ phiếu theo 10 tiêu chí chuyên sâu (VD: <code>/ai FPT</code>)
       `;
       await ctx.replyWithHTML(helpMessage);
     });
@@ -170,6 +188,23 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       `;
 
       await ctx.replyWithHTML(message);
+    });
+
+    // 6. /stock <SYMBOL> - Xem tổng quan kỹ thuật & dòng tiền cổ phiếu
+    this.bot.command('stock', async (ctx) => {
+      const text = ctx.message.text.trim();
+      const parts = text.split(/\s+/);
+      if (parts.length < 2) {
+        return ctx.replyWithHTML(
+          '⚠️ Vui lòng nhập mã cổ phiếu. Ví dụ: <code>/stock FPT</code> hoặc <code>/stock HPG</code>',
+        );
+      }
+
+      const symbol = parts[1].toUpperCase();
+      await ctx.replyWithHTML(`⌛ Đang tải dữ liệu kỹ thuật và dòng tiền mã <b>${symbol}</b>...`);
+
+      const { text: msg, keyboard } = await this.buildStockDetailView(symbol);
+      await ctx.replyWithHTML(msg, keyboard);
     });
 
     // 6. /topflow
@@ -321,89 +356,371 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       }
     });
 
-    // 10. /ai <SYMBOL> hoặc /gemini <SYMBOL> hoặc /ai_analysis <SYMBOL>
-    this.bot.command(['ai', 'gemini', 'ai_analysis'], async (ctx) => {
+    // 10. Lắng nghe sự kiện thêm mã vào Watchlist từ nút bấm
+    this.bot.action(/^wl_add:(.+)$/, async (ctx) => {
+      try {
+        const symbol = ctx.match[1].toUpperCase();
+        const chatId = ctx.chat?.id.toString();
+        if (!chatId) return;
+
+        const username = ctx.from?.username || ctx.from?.first_name;
+        const result = await this.watchlistService.addSymbol(chatId, username, symbol);
+        await ctx.answerCbQuery(result.message.replace(/<[^>]*>/g, ''));
+        await ctx.replyWithHTML(result.message);
+      } catch (error) {
+        this.logger.error(`Lỗi xử lý click button Watchlist Add: ${error.message}`);
+        await ctx.answerCbQuery('⚠️ Có lỗi xảy ra khi thêm mã vào Watchlist.');
+      }
+    });
+
+    // 11. Lắng nghe sự kiện bấm nút hỏi AI từ giao diện /stock
+    this.bot.action(/^ask_ai:(.+)$/, async (ctx) => {
+      try {
+        const symbol = ctx.match[1].toUpperCase();
+        await ctx.answerCbQuery(`⌛ Gemini AI đang phân tích mã ${symbol}...`);
+        await this.handleAiConversation(ctx, `Phân tích chuyên sâu mã ${symbol}, đánh giá điểm mua, rủi ro và các yếu tố tác động`, undefined);
+      } catch (error) {
+        this.logger.error(`Lỗi xử lý click button Ask AI: ${error.message}`);
+      }
+    });
+
+    // 12. Lệnh /analysis <SYMBOL> (hoặc /phantich, /danhgia) - Báo cáo phân tích chuyên sâu 7 trụ cột
+    this.bot.command(['analysis', 'phantich', 'danhgia'], async (ctx) => {
       const text = ctx.message.text.trim();
       const parts = text.split(/\s+/);
       if (parts.length < 2) {
         const quickKeyboard = Markup.inlineKeyboard([
           [
-            Markup.button.callback('🤖 FPT', 'ai:FPT:summary'),
-            Markup.button.callback('🤖 HPG', 'ai:HPG:summary'),
-            Markup.button.callback('🤖 VNM', 'ai:VNM:summary'),
-            Markup.button.callback('🤖 SSI', 'ai:SSI:summary'),
+            Markup.button.callback('🏛️ Phân tích SSI', 'analysis:SSI'),
+            Markup.button.callback('🏛️ Phân tích FPT', 'analysis:FPT'),
+            Markup.button.callback('🏛️ Phân tích HPG', 'analysis:HPG'),
           ],
           [
-            Markup.button.callback('🤖 MBB', 'ai:MBB:summary'),
-            Markup.button.callback('🤖 TCB', 'ai:TCB:summary'),
-            Markup.button.callback('🤖 MWG', 'ai:MWG:summary'),
-            Markup.button.callback('🤖 CMG', 'ai:CMG:summary'),
+            Markup.button.callback('🏛️ Phân tích VNM', 'analysis:VNM'),
+            Markup.button.callback('🏛️ Phân tích MBB', 'analysis:MBB'),
+            Markup.button.callback('🏛️ Phân tích MWG', 'analysis:MWG'),
+          ],
+          [
+            Markup.button.callback('🏛️ Phân tích TCB', 'analysis:TCB'),
+            Markup.button.callback('🏛️ Phân tích VHM', 'analysis:VHM'),
+            Markup.button.callback('🏛️ Phân tích VIC', 'analysis:VIC'),
           ],
         ]);
 
         return ctx.replyWithHTML(
-          '⚠️ Vui lòng nhập mã cổ phiếu cần AI phân tích. Ví dụ: <code>/ai FPT</code> hoặc bấm chọn nhanh bên dưới:',
+          '🏛️ <b>PHÂN TÍCH CHUYÊN SÂU TOÀN DIỆN MÃ CỔ PHIẾU</b>\n\n' +
+          '• Sử dụng lệnh: <code>/analysis MÃ</code> (Ví dụ: <code>/analysis SSI</code> hoặc <code>/analysis FPT</code>)\n\n' +
+          '📊 <i>Hệ thống sẽ tổng hợp tin tức bài báo mới nhất, bối cảnh vĩ mô, dòng vốn quỹ ngoại ETF, game doanh nghiệp, BCTC, chỉ số tài chính, ban lãnh đạo & điểm mua kỹ thuật để lập báo cáo chuyên sâu!</i>\n\n' +
+          '👉 Hoặc chọn nhanh cổ phiếu bên dưới:',
           quickKeyboard,
         );
       }
 
       const symbol = parts[1].toUpperCase();
-      await ctx.replyWithHTML(`⌛ <b>Google Gemini AI</b> đang phân tích cổ phiếu <b>${symbol}</b> với dữ liệu kỹ thuật thực tế...\n📊 Đang lấy dữ liệu lịch sử + tính RSI, MACD, MA, Support/Resistance...\n🎨 Đang vẽ biểu đồ giá...`);
-
-      const { text: msg, keyboard, chartUrl } = await this.buildAiAnalysisView(symbol, 'summary');
-
-      // Gửi ảnh biểu đồ trước
-      if (chartUrl) {
-        try {
-          await ctx.replyWithPhoto({ url: chartUrl }, {
-            caption: `📊 Biểu đồ giá ${symbol} (60 phiên) | MA20 | MA50 | Bollinger Bands\n🎯 Điểm mua an toàn & Stop Loss đã đánh dấu trên chart`,
-          });
-        } catch (chartErr) {
-          this.logger.error(`Lỗi gửi biểu đồ ${symbol}: ${chartErr.message}`);
-        }
-      }
-
-      // Gửi text phân tích
-      await ctx.replyWithHTML(msg, keyboard);
+      await this.handleComprehensiveAnalysis(ctx, symbol);
     });
 
-    // 11. Lắng nghe sự kiện người dùng bấm chọn các mục phân tích AI
-    this.bot.action(/^ai:([A-Z0-9]+):?([a-z]*)$/i, async (ctx) => {
+    // Lắng nghe sự kiện click nút phân tích toàn diện
+    this.bot.action(/^analysis:(.+)$/, async (ctx) => {
       try {
-        await ctx.answerCbQuery('⌛ Đang tải phân tích AI...');
         const symbol = ctx.match[1].toUpperCase();
-        const section = (ctx.match[2] as any) || 'summary';
-
-        const { text: msg, keyboard, chartUrl } = await this.buildAiAnalysisView(symbol, section);
-
-        // Nếu là summary và có chart, gửi ảnh mới
-        if (section === 'summary' && chartUrl) {
-          try {
-            await ctx.replyWithPhoto({ url: chartUrl }, {
-              caption: `📊 Biểu đồ giá ${symbol} (60 phiên) | MA20 | MA50 | Bollinger Bands`,
-            });
-          } catch (chartErr) {
-            this.logger.debug(`Không gửi được biểu đồ cập nhật: ${chartErr.message}`);
-          }
-        }
-
-        try {
-          await ctx.editMessageText(msg, { parse_mode: 'HTML', ...keyboard });
-        } catch (err) {
-          if (err.message && err.message.includes('message is not modified')) {
-            return;
-          }
-          // Nếu không edit được (message quá cũ), gửi message mới
-          try {
-            await ctx.replyWithHTML(msg, keyboard);
-          } catch (replyErr) {
-            this.logger.error(`Không gửi được tin nhắn: ${replyErr.message}`);
-          }
-        }
+        await ctx.answerCbQuery(`⌛ Đang lập báo cáo phân tích toàn diện mã ${symbol}...`);
+        await this.handleComprehensiveAnalysis(ctx, symbol);
       } catch (error) {
-        this.logger.error(`Lỗi xử lý click button AI Analysis: ${error.message}`);
+        this.logger.error(`Lỗi xử lý click button Analysis: ${error.message}`);
       }
     });
+
+    // 13. Lệnh /ai <CÂU HỎI> (hoặc /chat, /ask, /gemini) để trò chuyện và phân tích chuyên sâu với Gemini AI
+    this.bot.command(['ai', 'chat', 'ask', 'gemini'], async (ctx) => {
+      const text = ctx.message.text.trim();
+      const query = text.replace(/^\/(ai|chat|ask|gemini)(@\w+)?\s*/i, '').trim();
+
+      if (!query) {
+        const quickKeyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('🤖 Phân tích FPT', 'ask_ai:FPT'),
+            Markup.button.callback('🤖 Phân tích HPG', 'ask_ai:HPG'),
+            Markup.button.callback('🤖 Phân tích VNM', 'ask_ai:VNM'),
+          ],
+          [
+            Markup.button.callback('🤖 Phân tích SSI', 'ask_ai:SSI'),
+            Markup.button.callback('🤖 Phân tích MBB', 'ask_ai:MBB'),
+            Markup.button.callback('🤖 Phân tích MWG', 'ask_ai:MWG'),
+          ],
+        ]);
+
+        return ctx.replyWithHTML(
+          '🤖 <b>TRỢ LÝ GEMINI AI CHỨNG KHOÁN</b>\n\n' +
+          '• Bắt đầu câu hỏi: <code>/ai &lt;câu hỏi hoặc mã CP&gt;</code>\n' +
+          '  <i>(Ví dụ: <code>/ai FPT mua được không?</code> hoặc <code>/ai HPG</code>)</i>\n\n' +
+          '• <b>Tiếp tục trò chuyện:</b> Chỉ cần <b>Reply (Trả lời)</b> trực tiếp tin nhắn của Bot để thảo luận liên tục với đầy đủ ngữ cảnh!',
+          quickKeyboard,
+        );
+      }
+
+      await this.handleAiConversation(ctx, query, undefined);
+    });
+
+    // 14. Lắng nghe tin nhắn Text: CHỈ phản hồi khi người dùng Reply vào tin nhắn của Bot
+    this.bot.on('text', async (ctx) => {
+      const text = ctx.message.text.trim();
+      // Bỏ qua các câu lệnh bắt đầu bằng /
+      if (text.startsWith('/')) {
+        return;
+      }
+
+      const replyTo = ctx.message.reply_to_message;
+      if (!replyTo) {
+        // Tin nhắn tự do không reply -> Bỏ qua để không spam chat
+        return;
+      }
+
+      // Kiểm tra xem tin nhắn được reply có phải là tin nhắn do Bot gửi không
+      const isReplyToBot = replyTo.from?.is_bot || this.chatHistoryStore.has(replyTo.message_id);
+      if (isReplyToBot) {
+        await this.handleAiConversation(ctx, text, replyTo.message_id);
+      }
+    });
+  }
+
+  /**
+   * Xử lý báo cáo phân tích toàn diện cho lệnh /analysis
+   */
+  private async handleComprehensiveAnalysis(ctx: any, symbol: string) {
+    const cleanSym = symbol.trim().toUpperCase();
+    const chatId = ctx.chat.id.toString();
+    const userMsgId = ctx.message?.message_id;
+    const username = ctx.from?.username || ctx.from?.first_name;
+
+    await this.watchlistService.registerUser(chatId, username);
+
+    try {
+      await ctx.sendChatAction('typing');
+    } catch (e) {}
+
+    await ctx.replyWithHTML(
+      `⌛ <b>Đang lập Báo cáo Phân tích Toàn diện mã ${cleanSym}...</b>\n` +
+      `<i>(Bóc tách tin tức báo chí, BCTC, vĩ mô, quỹ ngoại ETF, game doanh nghiệp & chỉ số tài chính)</i>`,
+    );
+
+    try {
+      // 1. Thu thập song song tất cả các nguồn dữ liệu thực tế
+      const [full, companyProfile, symbolNews, macroNews] = await Promise.all([
+        this.stockService.getFullAnalysis(cleanSym),
+        this.stockService.getCompanyProfile(cleanSym),
+        this.newsService.getLatestNewsBySymbol(cleanSym, 8),
+        this.newsService.getUnsentNewsAll(4),
+      ]);
+
+      // 2. Tạo báo cáo phân tích chuyên sâu bằng AI (với Fallback Engine)
+      const reportText = await this.aiService.analyzeStockComprehensive(
+        cleanSym,
+        full.stockDetail,
+        full.financial,
+        symbolNews,
+        full.technicals,
+        full.safeBuy,
+        full.scenarios,
+        companyProfile,
+        macroNews,
+      );
+
+      // 3. Tạo inline keyboard hành động nhanh
+      const keyboard = Markup.inlineKeyboard([
+        [
+          Markup.button.callback('📊 Biểu đồ / Kỹ thuật', `stock:${cleanSym}`),
+          Markup.button.callback('🏦 Báo cáo tài chính', `fa:${cleanSym}:latest`),
+        ],
+        [
+          Markup.button.callback('🌊 Dòng tiền Real-time', `flow:${cleanSym}`),
+          Markup.button.callback('📰 Tin tức bài báo', `news:${cleanSym}`),
+        ],
+        [
+          Markup.button.callback('➕ Thêm vào Watchlist', `wl_add:${cleanSym}`),
+        ],
+      ]);
+
+      // 4. Gửi báo cáo phân tích cho người dùng
+      let sentMsg: any;
+      if (reportText.length <= 4000) {
+        sentMsg = await ctx.replyWithHTML(reportText, {
+          reply_parameters: userMsgId ? { message_id: userMsgId } : undefined,
+          ...keyboard,
+        });
+      } else {
+        const chunks = this.splitMessageIntoChunks(reportText, 3800);
+        for (let i = 0; i < chunks.length; i++) {
+          const isFirst = i === 0;
+          const isLast = i === chunks.length - 1;
+          sentMsg = await ctx.replyWithHTML(chunks[i], {
+            reply_parameters: isFirst && userMsgId ? { message_id: userMsgId } : undefined,
+            ...(isLast ? keyboard : {}),
+          });
+        }
+      }
+
+      // 5. Lưu vào Chat History Store để khi người dùng Reply, bot trả lời tiếp nối ngữ cảnh
+      if (sentMsg?.message_id) {
+        this.chatHistoryStore.set(sentMsg.message_id, {
+          messageId: sentMsg.message_id,
+          chatId,
+          role: 'model',
+          text: reportText,
+          replyToMessageId: userMsgId,
+        });
+
+        if (this.chatHistoryStore.size > 500) {
+          const firstKey = this.chatHistoryStore.keys().next().value;
+          if (firstKey !== undefined) {
+            this.chatHistoryStore.delete(firstKey);
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Lỗi khi tạo Báo cáo Phân tích Toàn diện mã ${cleanSym}: ${error.message}`);
+      await ctx.replyWithHTML(`⚠️ Không thể tạo báo cáo phân tích cho mã <b>${cleanSym}</b> lúc này. Vui lòng thử lại sau giây lát!`);
+    }
+  }
+
+  /**
+   * Xử lý câu hỏi hội thoại nhiều lượt với Gemini AI, duy trì chuỗi hội thoại
+   */
+  private async handleAiConversation(ctx: any, userQuery: string, replyToMessageId?: number) {
+    const chatId = ctx.chat.id.toString();
+    const userMsgId = ctx.message?.message_id;
+    const username = ctx.from?.username || ctx.from?.first_name;
+
+    await this.watchlistService.registerUser(chatId, username);
+
+    try {
+      await ctx.sendChatAction('typing');
+    } catch (e) {}
+
+    // Lưu tin nhắn của user vào history store
+    if (userMsgId) {
+      this.chatHistoryStore.set(userMsgId, {
+        messageId: userMsgId,
+        chatId,
+        role: 'user',
+        text: userQuery,
+        replyToMessageId,
+      });
+    }
+
+    // 1. Thu thập chuỗi lịch sử hội thoại trước đó (nếu có replyToMessageId)
+    const conversationHistory: Array<{ role: 'user' | 'model'; content: string }> = [];
+    if (replyToMessageId) {
+      let currentId: number | undefined = replyToMessageId;
+      const visited = new Set<number>();
+
+      while (currentId && !visited.has(currentId)) {
+        visited.add(currentId);
+        const item = this.chatHistoryStore.get(currentId);
+        if (!item) {
+          // Nếu không có trong store (tin nhắn cũ trước khi restart), lấy trực tiếp từ reply_to_message
+          if (visited.size === 1 && ctx.message?.reply_to_message?.text) {
+            conversationHistory.unshift({
+              role: 'model',
+              content: ctx.message.reply_to_message.text,
+            });
+          }
+          break;
+        }
+        conversationHistory.unshift({ role: item.role, content: item.text });
+        currentId = item.replyToMessageId;
+      }
+    }
+
+    // 2. Nhận diện mã cổ phiếu trong câu hỏi hiện tại hoặc các câu hỏi trước
+    let stockContext = '';
+    try {
+      const allText = `${userQuery} ${conversationHistory.map((c) => c.content).join(' ')}`;
+      const detectedSymbols = this.newsService.extractStockSymbols(allText);
+      
+      let symbolInfo = '';
+      if (detectedSymbols.length > 0) {
+        const targetSymbol = detectedSymbols[0];
+        const full = await this.stockService.getFullAnalysis(targetSymbol);
+        const d = full.stockDetail;
+        const t = full.technicals;
+        const f = full.financial;
+        const s = full.safeBuy;
+
+        // Lấy các bài báo/tin tức mới nhất của mã cổ phiếu
+        const symbolNews = await this.newsService.getLatestNewsBySymbol(targetSymbol, 4);
+        const newsList = symbolNews.map((n) => `  • ${n.title} (${n.source})`).join('\n');
+
+        symbolInfo = `
+MÃ CỔ PHIẾU: ${targetSymbol}
+- Giá hiện tại: ${d.currentPrice}k (${d.change > 0 ? '+' : ''}${d.changePercent}%) | Khối lượng: ${d.totalVolume.toLocaleString('vi-VN')} CP
+- Dòng tiền mua ròng chủ động: ${d.netActiveBuyValue > 0 ? '+' : ''}${d.netActiveBuyValue} Tỷ VNĐ (${d.flowTrend})
+- Khối ngoại Mua/Bán ròng: ${d.foreignNetBuyVolume > 0 ? '+' : ''}${d.foreignNetBuyVolume.toLocaleString('vi-VN')} CP
+- Xu hướng kỹ thuật: ${t.trend} (${t.trendStrength}) | RSI(14): ${t.rsi14} | MACD Hist: ${t.macd.histogram}
+- Hỗ trợ gần nhất: ${t.support.join(', ') || 'N/A'}k | Kháng cự: ${t.resistance.join(', ') || 'N/A'}k
+- Vùng mua an toàn: ${s.safeBuyRange.min}k - ${s.safeBuyRange.max}k | Target ngắn hạn: ${s.targetShortTerm}k | Stoploss: ${s.stopLoss}k
+- Tài chính: BCTC ${f.reportPeriod}, P/E: ${f.ratios.pe}x, ROE: ${f.ratios.roe}%, Tăng trưởng LN: ${f.ratios.profitGrowth}%, Nợ/VCSH: ${f.ratios.deRatio}x
+- Tin tức sự kiện mới nhất của mã:
+${newsList || '  (Chưa có tin tức đột biến gần đây)'}
+        `.trim();
+      }
+
+      // Lấy thêm tin tức thị trường/vĩ mô/ETF chung gần nhất
+      const marketNews = await this.newsService.getUnsentNewsAll(3);
+      const marketNewsStr = marketNews.map((m) => `  • ${m.title}`).join('\n');
+
+      stockContext = `
+${symbolInfo}
+
+TIN TỨC THỊ TRƯỜNG & VĨ MÔ/ETF GẦN NHẤT:
+${marketNewsStr || '  • Thị trường duy trì thanh khoản ổn định'}
+      `.trim();
+    } catch (err) {
+      this.logger.debug(`Không lấy được context phụ cho mã: ${err.message}`);
+    }
+
+    // 3. Gọi Gemini AI với toàn bộ ngữ cảnh
+    try {
+      const aiResponse = await this.aiService.chatWithAi(userQuery, stockContext, conversationHistory);
+
+      // Gửi phản hồi lại cho người dùng bằng cách reply tin nhắn của họ
+      let sentMsg: any;
+      if (aiResponse.length <= 4000) {
+        sentMsg = await ctx.replyWithHTML(aiResponse, {
+          reply_parameters: userMsgId ? { message_id: userMsgId } : undefined,
+        });
+      } else {
+        const chunks = this.splitMessageIntoChunks(aiResponse, 3800);
+        for (let i = 0; i < chunks.length; i++) {
+          const isFirst = i === 0;
+          sentMsg = await ctx.replyWithHTML(chunks[i], {
+            reply_parameters: isFirst && userMsgId ? { message_id: userMsgId } : undefined,
+          });
+        }
+      }
+
+      // Lưu tin phản hồi của Bot vào history store
+      if (sentMsg?.message_id) {
+        this.chatHistoryStore.set(sentMsg.message_id, {
+          messageId: sentMsg.message_id,
+          chatId,
+          role: 'model',
+          text: aiResponse,
+          replyToMessageId: userMsgId,
+        });
+
+        // Giới hạn dung lượng store (giữ tối đa 500 tin gần nhất)
+        if (this.chatHistoryStore.size > 500) {
+          const firstKey = this.chatHistoryStore.keys().next().value;
+          if (firstKey !== undefined) {
+            this.chatHistoryStore.delete(firstKey);
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Lỗi khi xử lý chat AI: ${error.message}`);
+      await ctx.replyWithHTML('⚠️ Rất tiếc, AI tạm thời không thể phản hồi. Vui lòng thử lại sau giây lát!');
+    }
   }
 
   /**
@@ -540,65 +857,115 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
   }
 
   /**
-   * Tạo giao diện phân tích AI Gemini theo 10 tiêu chí chuyên sâu
-   * Với dữ liệu kỹ thuật THỰC TẾ + biểu đồ giá
+   * Tạo giao diện hiển thị Tổng quan kỹ thuật, dòng tiền và điểm mua của cổ phiếu (/stock)
    */
-  private async buildAiAnalysisView(
-    symbol: string,
-    section: 'summary' | 'short' | 'long' | 'valuation' | 'catalyst' = 'summary',
-  ) {
+  private async buildStockDetailView(symbol: string) {
     const cleanSym = symbol.toUpperCase();
+    const full = await this.stockService.getFullAnalysis(cleanSym);
+    const detail = full.stockDetail;
+    const tech = full.technicals;
+    const safeBuy = full.safeBuy;
 
-    // 1. Lấy phân tích toàn diện (giá lịch sử + kỹ thuật + tài chính + chart)
-    const fullAnalysis = await this.stockService.getFullAnalysis(cleanSym);
+    const icon = detail.change > 0 ? '🟢' : detail.change < 0 ? '🔴' : '🟡';
+    const trendIcon = tech.trend === 'UPTREND' ? '🟢 TĂNG' : tech.trend === 'DOWNTREND' ? '🔴 GIẢM' : '🟡 ĐI NGANG';
+    const gainPct = detail.currentPrice > 0 ? (((safeBuy.targetShortTerm - detail.currentPrice) / detail.currentPrice) * 100).toFixed(1) : '0';
 
-    // 2. Lấy tin tức
-    const news = await this.newsService.getLatestNewsBySymbol(cleanSym, 5);
+    let msg = `📊 <b>TỔNG QUAN KỸ THUẬT & DÒNG TIỀN - MÃ ${cleanSym}</b>\n\n`;
 
-    // 3. Gọi AI phân tích với dữ liệu kỹ thuật thực tế
-    const msg = await this.aiService.analyzeStockWithAi(
-      cleanSym,
-      fullAnalysis.stockDetail,
-      fullAnalysis.financial,
-      news,
-      fullAnalysis.technicals,
-      fullAnalysis.safeBuy,
-      fullAnalysis.scenarios,
-      section,
-    );
+    // 1. Thị giá & Biến động
+    msg += `🏷️ <b>Giá hiện tại:</b> ${icon} <b>${detail.currentPrice}k</b> (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)\n`;
+    msg += `📈 <b>Tham chiếu / Trần / Sàn:</b> ${detail.refPrice}k / ${detail.highPrice}k / ${detail.lowPrice}k\n`;
+    msg += `📦 <b>Tổng Khối lượng:</b> ${(detail.totalVolume / 1000).toFixed(0)}k CP\n\n`;
 
-    // 4. Tạo keyboard
+    // 2. Dòng tiền & Khối ngoại
+    msg += `🌊 <b>DÒNG TIỀN REAL-TIME:</b>\n`;
+    msg += `  • Mua CĐ: ${(detail.activeBuyVolume / 1000).toFixed(0)}k CP | Bán CĐ: ${(detail.activeSellVolume / 1000).toFixed(0)}k CP\n`;
+    msg += `  • Mua ròng CĐ: <b>${detail.netActiveBuyValue > 0 ? '+' : ''}${detail.netActiveBuyValue} Tỷ VNĐ</b>\n`;
+    msg += `  • Khối ngoại: ${detail.foreignNetBuyVolume >= 0 ? 'Mua ròng' : 'Bán ròng'} <b>${Math.abs(Math.round(detail.foreignNetBuyVolume / 1000))}k CP</b>\n\n`;
+
+    // 3. Chỉ báo kỹ thuật
+    msg += `🔬 <b>CHỈ BÁO KỸ THUẬT:</b>\n`;
+    msg += `  • <b>Xu hướng:</b> ${trendIcon} (${tech.trendStrength})\n`;
+    msg += `  • <b>RSI (14):</b> <code>${tech.rsi14}</code> (${tech.rsi14 >= 70 ? 'Quá mua' : tech.rsi14 <= 30 ? 'Quá bán' : 'Trung tính'})\n`;
+    msg += `  • <b>MACD:</b> <code>${tech.macd.histogram > 0 ? '▲' : '▼'} ${tech.macd.histogram}</code> | <b>Volume:</b> <code>${tech.currentVolumeRatio}x MA20</code>\n`;
+    msg += `  • <b>MA20:</b> ${tech.ma20}k | <b>MA50:</b> ${tech.ma50}k | <b>MA200:</b> ${tech.ma200}k\n`;
+    msg += `  • <b>Bollinger Bands:</b> ${tech.bollingerBands.lower}k ↔ ${tech.bollingerBands.upper}k\n\n`;
+
+    // 4. Điểm mua & Target
+    msg += `🎯 <b>ĐIỂM MUA & TARGET NGẮN HẠN:</b>\n`;
+    msg += `  • <b>Vùng mua an toàn:</b> <code>${safeBuy.safeBuyRange.min}k - ${safeBuy.safeBuyRange.max}k</code>\n`;
+    msg += `  • <b>Mục tiêu (Target):</b> <code>${safeBuy.targetShortTerm}k</code> (<b>+${gainPct}%</b>)\n`;
+    msg += `  • <b>Cắt lỗ (Stop Loss):</b> <code>${safeBuy.stopLoss}k</code> | <b>R/R:</b> 1:${safeBuy.riskRewardShort}\n`;
+
     const keyboard = Markup.inlineKeyboard([
       [
-        Markup.button.callback('📋 Tổng quan AI', `ai:${cleanSym}:summary`),
-        Markup.button.callback('📈 Ngắn hạn & Plan', `ai:${cleanSym}:short`),
+        Markup.button.callback('🏛️ Phân tích Toàn diện /analysis', `analysis:${cleanSym}`),
       ],
       [
-        Markup.button.callback('📊 Dài hạn & BCTC', `ai:${cleanSym}:long`),
-        Markup.button.callback('💎 Định giá & Moat', `ai:${cleanSym}:valuation`),
+        Markup.button.callback('🤖 Gemini AI Phân tích', `ask_ai:${cleanSym}`),
+        Markup.button.callback('📰 Tin tức', `news:${cleanSym}`),
       ],
       [
-        Markup.button.callback('🚀 Catalyst & Vĩ mô', `ai:${cleanSym}:catalyst`),
+        Markup.button.callback('🏦 Báo cáo tài chính', `fa:${cleanSym}:latest`),
+        Markup.button.callback('➕ Thêm vào Watchlist', `wl_add:${cleanSym}`),
       ],
     ]);
 
-    return { text: msg, keyboard, chartUrl: fullAnalysis.chartUrl };
+    return { text: msg, keyboard };
   }
 
   /**
    * Phương thức hỗ trợ gửi thông báo tự động từ Cron job tới Telegram Chat (kèm nút bấm nếu có)
+   * Tự động chia nhỏ tin nhắn nếu nội dung vượt quá giới hạn Telegram
    */
   async sendMessage(chatId: string, message: string, keyboard?: any) {
     if (!this.bot) return;
     try {
-      if (keyboard) {
-        await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', ...keyboard });
+      if (message.length <= 4000) {
+        if (keyboard) {
+          await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML', ...keyboard });
+        } else {
+          await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+        }
       } else {
-        await this.bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+        // Tách nhỏ tin nhắn theo từng đoạn văn bản
+        const chunks = this.splitMessageIntoChunks(message, 3800);
+        for (let i = 0; i < chunks.length; i++) {
+          const isLast = i === chunks.length - 1;
+          if (isLast && keyboard) {
+            await this.bot.telegram.sendMessage(chatId, chunks[i], { parse_mode: 'HTML', ...keyboard });
+          } else {
+            await this.bot.telegram.sendMessage(chatId, chunks[i], { parse_mode: 'HTML' });
+          }
+        }
       }
     } catch (error) {
       this.logger.error(`Lỗi khi gửi tin nhắn tới Telegram Chat ID ${chatId}: ${error.message}`);
     }
+  }
+
+  /**
+   * Chia nhỏ chuỗi tin nhắn dài an toàn theo dấu xuống dòng
+   */
+  private splitMessageIntoChunks(text: string, maxChunkSize = 3800): string[] {
+    const chunks: string[] = [];
+    let current = '';
+
+    const lines = text.split('\n');
+    for (const line of lines) {
+      if ((current + '\n' + line).length > maxChunkSize) {
+        if (current.trim()) chunks.push(current.trim());
+        current = line;
+      } else {
+        current += (current ? '\n' : '') + line;
+      }
+    }
+
+    if (current.trim()) {
+      chunks.push(current.trim());
+    }
+
+    return chunks.length > 0 ? chunks : [text];
   }
 
   /**
@@ -608,7 +975,7 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
     if (!this.bot) return;
     try {
       await this.bot.telegram.sendPhoto(chatId, { url: photoUrl }, {
-        caption: caption || '',
+        caption: (caption || '').slice(0, 1000),
         parse_mode: 'HTML',
       });
     } catch (error) {

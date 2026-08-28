@@ -17,12 +17,35 @@ export interface ScrapedNews {
 export class NewsService {
   private readonly logger = new Logger(NewsService.name);
 
-  // Danh sách các mã cổ phiếu phổ biến trên sàn HSX / HNX
+  // Danh sách các mã cổ phiếu phổ biến trên sàn HSX / HNX / UPCOM
   private readonly popularSymbols = [
-    'FPT', 'VNM', 'SSI', 'HPG', 'MBB', 'TCB', 'MWG', 'VHM', 'VIC', 'STB',
-    'ACB', 'BID', 'CTG', 'DGC', 'GAS', 'GVR', 'HDB', 'KDH', 'LPB', 'MSN',
-    'NLG', 'NVL', 'PDR', 'PLX', 'POW', 'SAB', 'SHB', 'SSB', 'TPB', 'VCB',
-    'VIB', 'VJC', 'VND', 'VRE', 'DIG', 'DXG', 'CEO', 'HAG', 'HSG', 'NKG'
+    // VN30 & Bluechips
+    'ACB', 'BCM', 'BID', 'BVH', 'CTG', 'FPT', 'GAS', 'GVR', 'HDB', 'HPG',
+    'MBB', 'MSN', 'MWG', 'PLX', 'POW', 'SAB', 'SHB', 'SSB', 'SSI', 'STB',
+    'TCB', 'TPB', 'VCB', 'VHM', 'VIB', 'VIC', 'VJC', 'VNM', 'VPB', 'VRE',
+    // Ngân hàng & Tài chính & Chứng khoán
+    'EIB', 'LPB', 'MSB', 'OCB', 'NAB', 'BAB', 'BVB', 'KLB', 'NVB', 'PGB',
+    'VCI', 'VND', 'HCM', 'MBS', 'SHS', 'BSI', 'CTS', 'FTS', 'AGR', 'VIX',
+    'ORS', 'BVS', 'TVS', 'VDS', 'DSC',
+    // Thép & Kim loại & Vật liệu xây dựng
+    'HSG', 'NKG', 'VGS', 'TLH', 'SMC', 'HT1', 'BCC', 'VCS',
+    // Bất động sản & Xây dựng & KCN
+    'DIG', 'DXG', 'CEO', 'NVL', 'PDR', 'KDH', 'NLG', 'KBC', 'IDC', 'VGC',
+    'SZC', 'BCG', 'HQC', 'SCR', 'DXS', 'HDC', 'TCH', 'KHG', 'CIENCO4',
+    'C4G', 'HHV', 'VCG', 'LCG', 'FCN', 'CTD', 'HBC', 'DHA',
+    // Dầu khí & Hóa chất & Phân bón
+    'PVD', 'PVS', 'PVT', 'PVC', 'BSR', 'OIL', 'DGC', 'DCM', 'DPM', 'CSV',
+    'LAS', 'BFC', 'PHR', 'DPR', 'DRI',
+    // Công nghệ & Viễn thông & Bán lẻ & Tiêu dùng
+    'CMG', 'CTR', 'VGI', 'FOX', 'FRT', 'DGW', 'PET', 'PNJ', 'MSN', 'MCH',
+    'KDC', 'SBT', 'QNS', 'ANV', 'VHC', 'IDI', 'FMC', 'BAF', 'DBC', 'HAG',
+    'HNG',
+    // Cảng biển & Logistics & Vận tải
+    'GMD', 'HAH', 'VSC', 'PVT', 'VOS', 'TMS', 'VTP',
+    // Năng lượng & Điện & Nước
+    'GEG', 'REE', 'PC1', 'HDG', 'NT2', 'GELEX', 'GEX', 'TDM', 'BWE',
+    // Dệt may & Thủy sản & Khác
+    'TNG', 'MSH', 'STK', 'TCM', 'BMP', 'NTP', 'DRC', 'CSM'
   ];
 
   constructor(private readonly prisma: PrismaService) {}
@@ -141,12 +164,17 @@ export class NewsService {
   /**
    * Trích xuất các mã chứng khoán xuất hiện trong tiêu đề/nội dung
    */
-  extractStockSymbols(text: string): string[] {
+  extractStockSymbols(text: string, extraSymbols: string[] = []): string[] {
     const matchedSymbols = new Set<string>();
-    for (const sym of this.popularSymbols) {
-      const regex = new RegExp(`\\b${sym}\\b`, 'g');
-      if (regex.test(text.toUpperCase())) {
-        matchedSymbols.add(sym);
+    const allSymbolsToCheck = Array.from(new Set([...this.popularSymbols, ...extraSymbols]));
+    const upperText = text.toUpperCase();
+
+    for (const sym of allSymbolsToCheck) {
+      if (!sym) continue;
+      const cleanSym = sym.trim().toUpperCase();
+      const regex = new RegExp(`\\b${cleanSym}\\b`, 'g');
+      if (regex.test(upperText)) {
+        matchedSymbols.add(cleanSym);
       }
     }
     return Array.from(matchedSymbols);

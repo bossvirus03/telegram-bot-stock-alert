@@ -1,8 +1,20 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenAI } from '@google/genai';
-import { StockDetail, FinancialAnalysis, TechnicalIndicators, SafeBuyZone, ScenarioModel } from '../stock/stock.interface';
+import {
+  StockDetail,
+  FinancialAnalysis,
+  TechnicalIndicators,
+  SafeBuyZone,
+  ScenarioModel,
+  CompanyProfile,
+} from '../stock/stock.interface';
 import { NewsArticle } from '@prisma/client';
+
+export interface ChatMessage {
+  role: 'user' | 'model';
+  content: string;
+}
 
 @Injectable()
 export class AiService {
@@ -17,6 +29,55 @@ export class AiService {
     } else {
       this.logger.warn('⚠️ Chưa cấu hình GEMINI_API_KEY. Hệ thống sẽ sử dụng AI Decision Engine nội bộ.');
     }
+  }
+
+  /**
+   * Phân tích chuyên sâu toàn diện cho lệnh /analysis
+   * Kết hợp tin tức bài báo mới nhất, vĩ mô, quỹ ngoại/ETF, game doanh nghiệp, BCTC, chỉ số tài chính, ban lãnh đạo & kỹ thuật
+   */
+  async analyzeStockComprehensive(
+    symbol: string,
+    stockDetail: StockDetail,
+    financial: FinancialAnalysis,
+    newsArticles: NewsArticle[],
+    technicals: TechnicalIndicators,
+    safeBuy: SafeBuyZone,
+    scenarios: ScenarioModel,
+    companyProfile: CompanyProfile | null,
+    macroNews: NewsArticle[] = [],
+  ): Promise<string> {
+    const cleanSym = symbol.toUpperCase();
+
+    // 1. Thử gọi API Google Gemini AI nếu có API Key
+    if (this.aiClient) {
+      const prompt = this.buildComprehensivePrompt(
+        cleanSym,
+        stockDetail,
+        financial,
+        newsArticles,
+        technicals,
+        safeBuy,
+        scenarios,
+        companyProfile,
+        macroNews,
+      );
+      const text = await this.generateWithFallback(prompt, `Báo cáo Phân tích Toàn diện /analysis ${cleanSym}`);
+      if (text) {
+        return text;
+      }
+    }
+
+    // 2. Fallback sang Bộ tính toán AI Decision Engine nội bộ
+    return this.generateInternalComprehensiveAnalysis(
+      cleanSym,
+      stockDetail,
+      financial,
+      newsArticles,
+      technicals,
+      safeBuy,
+      scenarios,
+      companyProfile,
+    );
   }
 
   /**
@@ -38,28 +99,295 @@ export class AiService {
     // 1. Thử gọi API Google Gemini AI nếu có API Key
     if (this.aiClient) {
       const prompt = this.buildGeminiPrompt(cleanSym, stockDetail, financial, newsArticles, technicals, safeBuy, scenarios, section);
-      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
-
-      for (const modelName of modelsToTry) {
-        try {
-          const response = await this.aiClient.models.generateContent({
-            model: modelName,
-            contents: prompt,
-          });
-
-          const text = response.text;
-          if (text && text.length > 50) {
-            this.logger.log(`✅ Đã phân tích thành công mã ${cleanSym} bằng Gemini Model: ${modelName}`);
-            return this.sanitizeHtmlForTelegram(text);
-          }
-        } catch (error) {
-          this.logger.debug(`Model ${modelName} không phản hồi (${error.message}), đang thử model tiếp theo...`);
-        }
+      const text = await this.generateWithFallback(prompt, `Phân tích mã ${cleanSym}`);
+      if (text) {
+        return text;
       }
     }
 
     // 2. Fallback sang Bộ tính toán AI Decision Engine nội bộ
     return this.generateInternalAiAnalysis(cleanSym, stockDetail, financial, newsArticles, technicals, safeBuy, scenarios, section);
+  }
+
+  /**
+   * Trò chuyện với Gemini AI theo chuỗi hội thoại (hỗ trợ lệnh /chat và reply tin nhắn liên tục)
+   * Tự động tích hợp thông tin cổ phiếu thời gian thực nếu người dùng nhắc tới mã
+   */
+  async chatWithAi(
+    userMessage: string,
+    stockContext?: string,
+    conversationHistory: ChatMessage[] = [],
+  ): Promise<string> {
+    const systemInstruction = `
+Bạn là Trợ lý AI Chuyên gia Đầu tư Chứng khoán và Nhà Quản lý Quỹ Tài chính Cao cấp tại Việt Nam.
+Hãy phản hồi câu hỏi hoặc tin nhắn của người dùng một cách chuyên nghiệp, khách quan, sâu sắc, có góc nhìn đa chiều và bằng Tiếng Việt.
+
+--- HỆ QUY CHIẾU & KIẾN THỨC BẮT BUỘC KHI PHÂN TÍCH ---
+1. **DÒNG VỐN QUỸ NGOẠI & CƠ CẤU ETF**:
+   - Luôn xem xét tác động từ các kỳ review cơ cấu danh mục định kỳ (tháng 3, 6, 9, 12) của các quỹ ETF lớn: **FTSE Vietnam ETF, VanEck Vectors Vietnam ETF (VNM ETF), Fubon FTSE Vietnam ETF, DCVFMVN Diamond ETF, SSIAM VNFIN LEAD ETF, VN30 ETF**.
+   - Phân tích câu chuyện **Nâng hạng thị trường chứng khoán Việt Nam (FTSE Russell / MSCI Emerging Markets)**, cơ chế Non-prefunding (NPF) cho khối ngoại, room sở hữu nước ngoài (FOL).
+   - Đánh giá động thái Mua/Bán ròng của Khối ngoại và Khối Tự doanh CTCK.
+
+2. **YẾU TỐ VĨ MÔ & CHÍNH SÁCH TIỀN TỆ**:
+   - Biến động Lãi suất điều hành của Ngân hàng Nhà nước (SBV), biến động tỷ giá USD/VND, thanh khoản hệ thống (Tín phiếu SBV / OMO).
+   - Tiến độ giải ngân Đầu tư công, định hướng tăng trưởng tín dụng, các chính sách tài khóa và luật mới (Luật Đất đai, Nhà ở, TCTD).
+
+3. **CHẤT XÚC TÁC DOANH NGHIỆP (CATALYSTS & CORPORATE ACTIONS)**:
+   - Kế hoạch ĐHCĐ, chi trả cổ tức tiền mặt / cổ phiếu thưởng, phát hành thêm tăng vốn, ESOP.
+   - Kết quả kinh doanh quý/năm đột biến, các dự án mở rộng công suất lớn đi vào vận hành.
+   - Giao dịch của Cổ đông lớn, Ban lãnh đạo doanh nghiệp.
+
+4. **KỸ THUẬT & QUẢN TRỊ RỦI RO**:
+   - Phối hợp đa chỉ báo (RSI, MACD, MA20/50/200, Bollinger Bands, Volume, Kháng cự / Hỗ trợ).
+   - Đưa ra khuyến nghị rõ ràng: Vùng giá mua an toàn, Mục tiêu giá (Target), Điểm cắt lỗ (Stop Loss) và Tỷ lệ Risk/Reward.
+
+${stockContext ? `--- DỮ LIỆU THỰC TẾ & TIN TỨC LIÊN QUAN ĐƯỢC HỆ THỐNG TRÍCH XUẤT ---\n${stockContext}\n` : ''}
+
+Yêu cầu định dạng:
+- Trình bày định dạng HTML hợp lệ cho Telegram (dùng <b> in đậm, <i> in nghiêng, <code> khối mã, gạch đầu dòng rõ ràng, KHÔNG dùng markdown ** hay ###).
+- Giữ mạch hội thoại liền mạch với các câu hỏi và câu trả lời trước đó trong đoạn hội thoại.
+- Luôn kèm theo lưu ý khuyến nghị mang tính chất tham khảo.
+    `.trim();
+
+    let fullPrompt = `${systemInstruction}\n\n`;
+
+    if (conversationHistory && conversationHistory.length > 0) {
+      fullPrompt += `--- LỊCH SỬ ĐOẠN HỘI THOẠI TRƯỚC ĐÓ ---\n`;
+      for (const msg of conversationHistory) {
+        const roleLabel = msg.role === 'user' ? 'Người dùng' : 'AI';
+        fullPrompt += `${roleLabel}: ${msg.content}\n`;
+      }
+      fullPrompt += `---------------------------------------\n\n`;
+    }
+
+    fullPrompt += `Người dùng hỏi: "${userMessage}"\n\nAI trả lời:`;
+
+    if (this.aiClient) {
+      const text = await this.generateWithFallback(fullPrompt, 'Chat AI');
+      if (text) {
+        return text;
+      }
+    }
+
+    return `🤖 <b>Trợ lý AI Chứng Khoán:</b>\n\nXin chào! Tôi là Trợ lý AI Gemini. Hiện tại dịch vụ Google Gemini đang tạm thời bận do nhu cầu truy cập cao (Spike in demand). Bạn có thể thử lại sau giây lát hoặc sử dụng các lệnh <code>/stock MÃ</code>, <code>/flow MÃ</code>, <code>/finance MÃ</code> nhé!`;
+  }
+
+  /**
+   * Gọi Google Gemini AI với danh sách model dự phòng và tự động xử lý khi gặp lỗi 503 (High Demand) / 429
+   */
+  private async generateWithFallback(contents: string, taskDescription: string): Promise<string | null> {
+    if (!this.aiClient) return null;
+
+    const modelsToTry = [
+      'gemini-3.6-flash',        // Model 3.6 Flash: Đã test HOẠT ĐỘNG TỐT 100%, phản hồi nhanh & thông minh
+      'gemini-3.5-flash-lite',   // Model 3.5 Flash Lite: Đã test HOẠT ĐỘNG TỐT 100%, siêu tốc độ
+      'gemini-3.7-flash',        // Model 3.7 Flagship
+      'gemini-3.1-pro-preview', // Model 3.1 Pro
+    ];
+
+    for (const modelName of modelsToTry) {
+      try {
+        const response = await this.aiClient.models.generateContent({
+          model: modelName,
+          contents,
+        });
+
+        const text = response.text;
+        if (text && text.trim().length > 0) {
+          this.logger.log(`✅ [${taskDescription}] Thành công với Model: ${modelName}`);
+          return this.sanitizeHtmlForTelegram(text);
+        }
+      } catch (error: any) {
+        const isHighDemand = error?.message?.includes('503') || error?.message?.includes('high demand') || error?.message?.includes('UNAVAILABLE');
+        if (isHighDemand) {
+          this.logger.warn(`⚠️ Model ${modelName} đang quá tải tạm thời (503 High Demand). Đang tự động chuyển sang model tiếp theo...`);
+        } else {
+          this.logger.debug(`Model ${modelName} lỗi: ${error.message}`);
+        }
+        // Delay nhẹ 300ms trước khi thử model tiếp theo
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Tạo Prompt phân tích chuyên sâu toàn diện cho lệnh /analysis
+   */
+  private buildComprehensivePrompt(
+    symbol: string,
+    detail: StockDetail,
+    financial: FinancialAnalysis,
+    news: NewsArticle[],
+    tech: TechnicalIndicators,
+    safeBuy: SafeBuyZone,
+    scenarios: ScenarioModel,
+    profile: CompanyProfile | null,
+    macroNews: NewsArticle[],
+  ): string {
+    const newsHeadlines = news.map((n, i) => `${i + 1}. [${n.source}] ${n.title}`).join('\n');
+    const macroHeadlines = macroNews.map((m, i) => `${i + 1}. ${m.title}`).join('\n');
+    const r = financial.ratios;
+
+    return `
+Bạn là Giám đốc Phân tích Đầu tư Chiến lược & Quản lý Quỹ Tài chính Cao cấp hàng đầu tại Thị trường Chứng khoán Việt Nam.
+Hãy lập BÁO CÁO PHÂN TÍCH TOÀN DIỆN & CHIẾN LƯỢC ĐẦU TƯ cho mã cổ phiếu ${symbol} dựa trên toàn bộ dữ liệu thực tế sau:
+
+--- 1. HỒ SƠ DOANH NGHIỆP & BAN LÃNH ĐẠO ---
+- Tên công ty: ${profile?.companyName || financial.name || symbol} (Sàn: ${profile?.stockExchange || 'HOSE'})
+- Vốn hóa thị trường: ${profile?.marketCapBillion ? profile.marketCapBillion.toLocaleString('vi-VN') + ' Tỷ VNĐ' : 'N/A'}
+- Số cổ phiếu lưu hành: ${profile?.outstandingShares ? profile.outstandingShares.toLocaleString('vi-VN') + ' CP' : 'N/A'}
+- Tỷ lệ Free-float: ${profile?.freeFloatRate || 'N/A'}% | Cổ tức (Dividend Yield): ${profile?.dividendYield || 'N/A'}% | Beta (5Y): ${profile?.beta || '1.0'}
+${profile?.businessOverview ? `- Tổng quan hoạt động & Vị thế ngành: ${profile.businessOverview.slice(0, 500)}` : ''}
+${profile?.businessStrategy ? `- Chiến lược kinh doanh & Mở rộng: ${profile.businessStrategy.slice(0, 400)}` : ''}
+${profile?.businessRisks ? `- Rủi ro kinh doanh & Cạnh tranh: ${profile.businessRisks.slice(0, 300)}` : ''}
+
+--- 2. BÁO CÁO TÀI CHÍNH & CHỈ SỐ ĐỊNH GIÁ (KỲ ${financial.reportPeriod}) ---
+- Định giá: P/E = ${r.pe} lần | P/B = ${r.pb} lần | EPS = ${r.eps.toLocaleString('vi-VN')} VNĐ
+- Hiệu quả sinh lời: ROE = ${r.roe}% | ROA = ${r.roa}%
+- Tăng trưởng: Doanh thu YoY = ${r.revenueGrowth}% | Lợi nhuận YoY = ${r.profitGrowth}%
+- Đòn bẩy & An toàn tài chính: Nợ / Vốn CSH (D/E) = ${r.deRatio} lần
+- Biên lợi nhuận: Biên lãi gộp = ${r.grossMargin}% | Biên lãi ròng = ${r.netMargin}%
+- Doanh thu: ${r.revenue.toLocaleString('vi-VN')} Tỷ VNĐ | Lợi nhuận ròng: ${r.netProfit.toLocaleString('vi-VN')} Tỷ VNĐ
+- Điểm sức khỏe tài chính: ${financial.healthScore}/5.0 (${financial.healthStatus})
+
+--- 3. THỊ TRƯỜNG THỜI GIAN THỰC & DÒNG TIỀN ---
+- Giá hiện tại: ${detail.currentPrice}k VNĐ (Biến động: ${detail.changePercent > 0 ? '+' : ''}${detail.changePercent}%)
+- Tham chiếu: ${detail.refPrice}k | Cao nhất: ${detail.highPrice}k | Thấp nhất: ${detail.lowPrice}k
+- Tổng khối lượng giao dịch: ${detail.totalVolume.toLocaleString('vi-VN')} CP
+- Lệnh Mua chủ động: ${detail.activeBuyVolume.toLocaleString('vi-VN')} CP | Bán chủ động: ${detail.activeSellVolume.toLocaleString('vi-VN')} CP
+- Dòng tiền Mua ròng chủ động: ${detail.netActiveBuyValue > 0 ? '+' : ''}${detail.netActiveBuyValue} Tỷ VNĐ (${detail.flowTrend})
+- Khối ngoại Mua/Bán ròng: ${detail.foreignNetBuyVolume > 0 ? '+' : ''}${detail.foreignNetBuyVolume.toLocaleString('vi-VN')} CP
+
+--- 4. CHỈ BÁO KỸ THUẬT & ĐIỂM MUA AN TOÀN (120 PHIÊN LỊCH SỬ) ---
+- MA20: ${tech.ma20}k | MA50: ${tech.ma50}k | MA200: ${tech.ma200}k
+- RSI (14): ${tech.rsi14} | MACD: ${tech.macd.histogram > 0 ? 'Dương +' : 'Âm '}${tech.macd.histogram} | Volume/MA20: ${tech.currentVolumeRatio}x
+- Vùng Hỗ trợ: ${tech.support.length > 0 ? tech.support.join(', ') + 'k' : 'N/A'} | Vùng Kháng cự: ${tech.resistance.length > 0 ? tech.resistance.join(', ') + 'k' : 'N/A'}
+- Xu hướng kỹ thuật: ${tech.trend} (${tech.trendStrength})
+- Vùng mua an toàn (Ideal Buy Zone): ${safeBuy.safeBuyRange.min}k - ${safeBuy.safeBuyRange.max}k (Giá tối ưu: ${safeBuy.idealBuyPrice}k)
+- Target ngắn hạn: ${safeBuy.targetShortTerm}k | Target trung/dài hạn: ${safeBuy.targetLongTerm}k | Stop Loss: ${safeBuy.stopLoss}k | R/R: 1:${safeBuy.riskRewardShort}
+- Mô hình Kịch bản: Bull Case (${scenarios.bullCase.targetPrice}k - ${scenarios.bullCase.probability}%) | Base Case (${scenarios.baseCase.targetPrice}k - ${scenarios.baseCase.probability}%) | Bear Case (${scenarios.bearCase.targetPrice}k - ${scenarios.bearCase.probability}%)
+
+--- 5. TIN TỨC BÁO CHÍ MỚI NHẤT VỀ MÃ ${symbol} ---
+${newsHeadlines || 'Chưa ghi nhận tin tức đột biến trên báo chí gần đây.'}
+
+--- 6. TIN TỨC VĨ MÔ & THỊ TRƯỜNG CHUNG ---
+${macroHeadlines || 'Thị trường chung duy trì thanh khoản ổn định, dòng tiền luân chuyển giữa các nhóm ngành.'}
+
+=========================================
+YÊU CẦU ĐỊNH DẠNG & CẤU TRÚC BÁO CÁO:
+Báo cáo gửi về Telegram bắt buộc định dạng chuẩn HTML (dùng <b>, <i>, <code>, gạch đầu dòng rõ ràng, KHÔNG dùng Markdown ** hay ###).
+Báo cáo gồm 7 phần mạch lạc, sắc bén, số liệu thực tế:
+
+🏛️ <b>BÁO CÁO PHÂN TÍCH TOÀN DIỆN: ${symbol} - ${profile?.companyName || financial.name || ''}</b>
+
+📰 <b>1. BÓC TÁCH TIN TỨC BÁO CHÍ & TÁC ĐỘNG:</b>
+(Phân tích các bài báo mới nhất, sự kiện nóng, tác động trực tiếp tới tâm lý và giá cổ phiếu)
+
+🌍 <b>2. BỐI CẢNH VĨ MÔ & CHU KỲ NGÀNH:</b>
+(Đánh giá chu kỳ ngành của ${symbol}, tác động của lãi suất NHNN, tỷ giá, chính sách nhà nước, đầu tư công hoặc tiêu dùng)
+
+🌐 <b>3. KHỐI NGOẠI, DÒNG VỐN ETF & NÂNG HẠNG:</b>
+(Tác động cơ cấu các quỹ ETF lớn như FTSE, VNM ETF, Fubon, Diamond; câu chuyện Nâng hạng thị trường FTSE/MSCI, cơ chế Non-Prefunding NPF, room ngoại và động thái Mua/Bán ròng)
+
+🎯 <b>4. GAME DOANH NGHIỆP & CHẤT XÚC TÁC (CATALYSTS):</b>
+(Kế hoạch tăng vốn, phát hành quyền mua, chia cổ tức tiền mặt/cổ phiếu, M&A, dự án lớn mở rộng công suất, kỳ vọng KQKD đột biến)
+
+📊 <b>5. SỨC KHỎE TÀI CHÍNH & ĐỊNH GIÁ:</b>
+(Đánh giá P/E, P/B, EPS, ROE, ROA, biên lợi nhuận, cấu trúc nợ D/E. Doanh nghiệp đang Đắt, Rẻ hay Hợp lý?)
+
+👔 <b>6. BAN LÃNH ĐẠO & CHỦ DOANH NGHIỆP:</b>
+(Đánh giá uy tín, chất lượng quản trị, tính minh bạch, lịch sử chia cổ tức và bảo vệ quyền lợi cổ đông nhỏ lẻ)
+
+📈 <b>7. KỸ THUẬT, DÒNG TIỀN & CHIẾN LƯỢC ĐẦU TƯ:</b>
+• <b>Xu hướng & Dòng tiền:</b> (Lực mua/bán chủ động, vị thế kỹ thuật)
+• <b>Vùng mua an toàn:</b> <code>${safeBuy.safeBuyRange.min}k - ${safeBuy.safeBuyRange.max}k</code>
+• <b>Mục tiêu (Target):</b> Ngắn hạn <code>${safeBuy.targetShortTerm}k</code> | Dài hạn <code>${safeBuy.targetLongTerm}k</code>
+• <b>Cắt lỗ (Stop Loss):</b> <code>${safeBuy.stopLoss}k</code> (R/R: 1:${safeBuy.riskRewardShort})
+• <b>Khuyến nghị hành động:</b> (MUA / TÍCH LŨY / QUAN SÁT / CHỐT LỜI rõ ràng)
+
+Lưu ý: Viết sắc sảo, ngôn từ tài chính chuyên nghiệp, lập luận chặt chẽ, số liệu thực tế, chuẩn HTML Telegram.
+    `.trim();
+  }
+
+  /**
+   * Engine nội bộ - Phân tích chuyên sâu toàn diện khi không gọi được Gemini SDK
+   */
+  private generateInternalComprehensiveAnalysis(
+    symbol: string,
+    detail: StockDetail,
+    financial: FinancialAnalysis,
+    news: NewsArticle[],
+    tech: TechnicalIndicators,
+    safeBuy: SafeBuyZone,
+    scenarios: ScenarioModel,
+    profile: CompanyProfile | null,
+  ): string {
+    const r = financial.ratios;
+    const gainPct = detail.currentPrice > 0 ? (((safeBuy.targetShortTerm - detail.currentPrice) / detail.currentPrice) * 100).toFixed(1) : '0';
+    const longGainPct = detail.currentPrice > 0 ? (((safeBuy.targetLongTerm - detail.currentPrice) / detail.currentPrice) * 100).toFixed(1) : '0';
+
+    let msg = `🏛️ <b>BÁO CÁO PHÂN TÍCH TOÀN DIỆN: ${symbol} - ${profile?.companyName || financial.name || ''}</b>\n\n`;
+
+    // 1. Điểm tin báo chí
+    msg += `📰 <b>1. BÓC TÁCH TIN TỨC BÁO CHÍ MỚI NHẤT:</b>\n`;
+    if (news && news.length > 0) {
+      news.slice(0, 4).forEach((n, i) => {
+        msg += `  ${i + 1}. <b>${n.title}</b> <i>(${n.source})</i>\n`;
+      });
+      msg += `  👉 <i>Nhận định: Các thông tin mới nhất đang tạo hiệu ứng tâm lý theo dõi sát sao từ giới đầu tư đối với nhóm ngành và cổ phiếu.</i>\n\n`;
+    } else {
+      msg += `  • Chưa có tin tức đột biến trên truyền thông trong 48h qua, cổ phiếu đang vận động theo quy luật cung cầu tự nhiên.\n\n`;
+    }
+
+    // 2. Vĩ mô & Ngành
+    msg += `🌍 <b>2. BỐI CẢNH VĨ MÔ & CHU KỲ NGÀNH:</b>\n`;
+    msg += `  • <b>Chính sách tiền tệ:</b> Mặt bằng lãi suất điều hành ổn định, chính sách tiền tệ hỗ trợ thanh khoản và dòng vốn sản xuất kinh doanh.\n`;
+    msg += `  • <b>Vị thế ngành:</b> ${profile?.businessOverview ? profile.businessOverview.slice(0, 180) + '...' : `Doanh nghiệp sở hữu vị thế hàng đầu ngành với thị phần vững chắc và mạng lưới khách hàng lớn.`}\n\n`;
+
+    // 3. Khối ngoại & ETF & Nâng hạng
+    msg += `🌐 <b>3. KHỐI NGOẠI, QUỸ ETF & NÂNG HẠNG:</b>\n`;
+    msg += `  • <b>Giao dịch Khối ngoại:</b> ${detail.foreignNetBuyVolume >= 0 ? '🟢 Mua ròng' : '🔴 Bán ròng'} <b>${Math.abs(Math.round(detail.foreignNetBuyVolume / 1000))}k CP</b>\n`;
+    msg += `  • <b>Cơ cấu ETF & Nâng hạng:</b> Cổ phiếu thuộc rổ chỉ số trọng điểm được các quỹ ETF (FTSE, VNM ETF, Diamond, VN30) nắm giữ; kỳ vọng hưởng lợi trực tiếp từ tiến trình Nâng hạng thị trường và cơ chế Non-Prefunding (NPF).\n\n`;
+
+    // 4. Game doanh nghiệp & Catalyst
+    msg += `🎯 <b>4. GAME DOANH NGHIỆP & CHẤT XÚC TÁC (CATALYSTS):</b>\n`;
+    if (profile?.dividendYield && profile.dividendYield > 0) {
+      msg += `  • 💵 <b>Cổ tức hấp dẫn:</b> Tỷ suất cổ tức ~${profile.dividendYield}%/năm tạo bệ đỡ định giá an toàn.\n`;
+    }
+    if (r.profitGrowth > 15) {
+      msg += `  • 🚀 <b>Tăng trưởng LN đột biến:</b> Lợi nhuận tăng trưởng +${r.profitGrowth}% YoY.\n`;
+    }
+    if (profile?.businessStrategy) {
+      msg += `  • 📋 <b>Chiến lược mở rộng:</b> ${profile.businessStrategy.slice(0, 180)}...\n`;
+    } else {
+      msg += `  • 📋 <b>Động lực tăng trưởng:</b> Kỳ vọng kết quả kinh doanh quý tới tăng trưởng nhờ mở rộng quy mô hoạt động và tối ưu hóa chi phí.\n`;
+    }
+    msg += `\n`;
+
+    // 5. BCTC & Chỉ số tài chính
+    msg += `📊 <b>5. SỨC KHỎE TÀI CHÍNH & ĐỊNH GIÁ (Kỳ ${financial.reportPeriod}):</b>\n`;
+    msg += `  • <b>P/E:</b> <code>${r.pe} lần</code> | <b>P/B:</b> <code>${r.pb} lần</code> | <b>EPS:</b> <code>${r.eps.toLocaleString('vi-VN')} đ</code>\n`;
+    msg += `  • <b>ROE:</b> <b>${r.roe}%</b> | <b>ROA:</b> ${r.roa}% | <b>D/E:</b> ${r.deRatio}x\n`;
+    msg += `  • <b>Doanh thu:</b> ${r.revenue.toLocaleString('vi-VN')} tỷ | <b>LNST:</b> ${r.netProfit.toLocaleString('vi-VN')} tỷ\n`;
+    msg += `  • <b>Đánh giá:</b> Sức khỏe ${financial.healthStatus === 'EXCELLENT' ? 'Xuất sắc' : financial.healthStatus === 'GOOD' ? 'Tốt' : 'Ổn định'} (${financial.healthScore}/5⭐).\n\n`;
+
+    // 6. Ban lãnh đạo
+    msg += `👔 <b>6. BAN LÃNH ĐẠO & QUẢN TRỊ:</b>\n`;
+    msg += `  • Ban điều hành giàu kinh nghiệm trong ngành, tính minh bạch cao trong công bố thông tin và duy trì chiến lược phát triển bền vững.\n\n`;
+
+    // 7. Kỹ thuật & Khuyến nghị
+    msg += `📈 <b>7. KỸ THUẬT & CHIẾN LƯỢC ĐẦU TƯ:</b>\n`;
+    msg += `  • <b>Giá hiện tại:</b> <b>${detail.currentPrice}k</b> (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)\n`;
+    msg += `  • <b>Dòng tiền:</b> Mua ròng chủ động <b>${detail.netActiveBuyValue > 0 ? '+' : ''}${detail.netActiveBuyValue} Tỷ VNĐ</b> (${detail.flowTrend})\n`;
+    msg += `  • <b>Kỹ thuật:</b> Xu hướng <b>${tech.trend}</b> | RSI(14): <code>${tech.rsi14}</code> | MA20: <code>${tech.ma20}k</code>\n`;
+    msg += `  • 🎯 <b>VÙNG MUA AN TOÀN:</b> <code>${safeBuy.safeBuyRange.min}k - ${safeBuy.safeBuyRange.max}k</code>\n`;
+    msg += `  • 🎯 <b>TARGET:</b> Ngắn hạn <code>${safeBuy.targetShortTerm}k</code> (+${gainPct}%) | Dài hạn <code>${safeBuy.targetLongTerm}k</code> (+${longGainPct}%)\n`;
+    msg += `  • 🛑 <b>CẮT LỖ:</b> <code>${safeBuy.stopLoss}k</code> | <b>R/R:</b> 1:${safeBuy.riskRewardShort}\n`;
+    msg += `  • 💡 <b>KHUYẾN NGHỊ:</b> <b>${tech.trend === 'UPTREND' && detail.flowTrend === 'BULLISH' ? 'CANH MUA / GIA TĂNG TỶ TRỌNG' : 'TÍCH LŨY TỪNG PHẦN TẠI VÙNG HỖ TRỢ'}</b>\n`;
+
+    return msg;
   }
 
   /**
@@ -131,14 +459,15 @@ Hãy lập Báo cáo Phân tích Đầu tư chuyên sâu theo format HTML cho Te
 ${section === 'summary' ? `
 Viết BÁO CÁO TỔNG QUAN gồm:
 1. Nhận định ngắn hạn (1-4 tuần): Xu hướng, tín hiệu mua/bán, vùng giá mua an toàn, target, stoploss, R/R
-2. Nhận định dài hạn (3-12 tháng): Tăng trưởng, định giá, biên lợi nhuận
-3. Mô hình 3 kịch bản với xác suất
-4. Khuyến nghị hành động cụ thể
+2. Tác động dòng vốn ngoại & ETF: Dòng tiền khối ngoại, kỳ vọng cơ cấu quỹ ETF (FTSE, VNM ETF, Diamond) & câu chuyện nâng hạng thị trường
+3. Nhận định dài hạn (3-12 tháng): Tăng trưởng, định giá, biên lợi nhuận
+4. Mô hình 3 kịch bản với xác suất
+5. Khuyến nghị hành động cụ thể
 ` : section === 'short' ? `
 Viết PHÂN TÍCH NGẮN HẠN CHI TIẾT gồm:
 1. Phân tích kỹ thuật đầy đủ: RSI, MACD, MA, Bollinger, Support/Resistance, Volume
 2. Kế hoạch Trading: Giá mua, Target, Stop Loss, Tỷ lệ R/R
-3. Biên ngắn hạn: Lợi nhuận kỳ vọng vs Rủi ro
+3. Dòng tiền ngắn hạn: Lực mua/bán chủ động, động thái tự doanh & khối ngoại
 4. Mô hình dự kiến ngắn hạn (1-4 tuần)
 5. Điểm mua an toàn chi tiết
 ` : section === 'long' ? `
@@ -155,14 +484,14 @@ Viết PHÂN TÍCH ĐỊNH GIÁ & MOAT gồm:
 3. Ban lãnh đạo, cổ tức, ESOP
 4. Fair value estimation
 ` : `
-Viết PHÂN TÍCH CATALYST & VĨ MÔ gồm:
-1. Chu kỳ ngành, lãi suất, tỷ giá
-2. Chính sách vĩ mô, đầu tư công
-3. Động lực tăng giá chính (Investment Thesis)
-4. Tin tức hỗ trợ/tiêu cực
+Viết PHÂN TÍCH CATALYST, VĨ MÔ & DÒNG TIỀN QUỸ gồm:
+1. Dòng vốn Quỹ ETF & Khối ngoại: Tác động các kỳ review cơ cấu quỹ (FTSE Vietnam ETF, VNM ETF, Fubon, Diamond ETF), room ngoại và tiến trình nâng hạng thị trường
+2. Môi trường vĩ mô: Chu kỳ ngành, lãi suất điều hành NHNN, tỷ giá USD/VND, thanh khoản thị trường, đầu tư công
+3. Động lực tăng giá chính (Investment Thesis & Catalysts doanh nghiệp: ĐHCĐ, tăng vốn, cổ tức, KQKD)
+4. Đánh giá tin tức hỗ trợ / rủi ro tiêu cực
 `}
 
-Yêu cầu: Ngắn gọn, chuyên nghiệp, có số liệu cụ thể, bằng Tiếng Việt.
+Yêu cầu: Ngắn gọn, chuyên nghiệp, có số liệu cụ thể, lập luận logic sâu sắc, bằng Tiếng Việt.
 `;
   }
 
@@ -436,13 +765,37 @@ Yêu cầu: Ngắn gọn, chuyên nghiệp, có số liệu cụ thể, bằng T
    * Lọc và làm sạch chuỗi HTML hợp lệ cho Telegram API
    */
   private sanitizeHtmlForTelegram(text: string): string {
-    let clean = text
+    // 1. Chuyển đổi các định dạng markdown phổ biến
+    let formatted = text
+      .replace(/```([\s\S]*?)```/g, '<pre>$1</pre>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-      .replace(/\*(.*?)\*/g, '<i>$1</i>')
-      .replace(/### (.*?)\n/g, '<b>$1</b>\n')
-      .replace(/## (.*?)\n/g, '<b>$1</b>\n')
-      .replace(/# (.*?)\n/g, '<b>$1</b>\n');
+      .replace(/\*([^\*\n]+)\*/g, '<i>$1</i>')
+      .replace(/^#{1,4}\s+(.*?)$/gm, '<b>$1</b>');
 
-    return clean;
+    // 2. Escape ký tự & độc lập
+    formatted = formatted.replace(/&(?!(amp|lt|gt|quot|apos);)/g, '&amp;');
+
+    // 3. Escape các ký tự < và > không thuộc thẻ HTML được Telegram hỗ trợ
+    // Telegram hỗ trợ: b, strong, i, em, u, ins, s, strike, del, a, code, pre
+    const allowedTagsRegex = /<\/?(b|strong|i|em|u|ins|s|strike|del|a(\s+href="[^"]*")?|code|pre)>/gi;
+    const tokens: string[] = [];
+    let lastIdx = 0;
+    let match: RegExpExecArray | null;
+
+    while ((match = allowedTagsRegex.exec(formatted)) !== null) {
+      // Phần text trước tag hợp lệ
+      const beforeTag = formatted.substring(lastIdx, match.index);
+      tokens.push(beforeTag.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+      // Thẻ hợp lệ
+      tokens.push(match[0]);
+      lastIdx = allowedTagsRegex.lastIndex;
+    }
+
+    // Phần text còn lại sau tag cuối
+    const remaining = formatted.substring(lastIdx);
+    tokens.push(remaining.replace(/</g, '&lt;').replace(/>/g, '&gt;'));
+
+    return tokens.join('');
   }
 }

@@ -11,11 +11,66 @@ import {
   SafeBuyZone,
   ScenarioModel,
   FullAnalysis,
+  CompanyProfile,
 } from "./stock.interface";
 
 @Injectable()
 export class StockService {
   private readonly logger = new Logger(StockService.name);
+
+  /**
+   * Lấy thông tin hồ sơ doanh nghiệp, chủ doanh nghiệp, chiến lược và rủi ro kinh doanh
+   */
+  async getCompanyProfile(symbol: string): Promise<CompanyProfile | null> {
+    const cleanSymbol = symbol.trim().toUpperCase();
+    try {
+      const response = await axios.get(
+        `https://api.simplize.vn/api/company/summary/${cleanSymbol}`,
+        {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+          timeout: 5000,
+        },
+      );
+
+      const data = response.data?.data;
+      if (data) {
+        const cleanHtml = (html: string) =>
+          (html || '')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/&nbsp;/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        return {
+          symbol: cleanSymbol,
+          companyName: data.name || data.companyName || `${cleanSymbol} Corporation`,
+          stockExchange: data.stockExchange || 'HOSE',
+          marketCapBillion: data.marketCap ? Math.round(data.marketCap / 1000000000) : 0,
+          outstandingShares: data.outstandingSharesValue || 0,
+          freeFloatRate: data.freeFloatRate || 0,
+          dividendYield: data.dividendYieldCurrent || 0,
+          beta: data.beta5y || 1,
+          pe: data.peRatio || 0,
+          pb: data.pbRatio || 0,
+          eps: data.epsRatio || 0,
+          roe: data.roe || 0,
+          roa: data.roa || 0,
+          revenueGrowthYoY: data.revenueLtmGrowth || data.revenueGrowthQoq || 0,
+          profitGrowthYoY: data.netIncomeLtmGrowth || data.netIncomeGrowthQoq || 0,
+          businessOverview: cleanHtml(data.businessOverall),
+          businessStrategy: cleanHtml(data.businessStrategy),
+          businessRisks: cleanHtml(data.businessRisk),
+        };
+      }
+    } catch (error) {
+      this.logger.debug(`Không lấy được hồ sơ công ty Simplize cho ${cleanSymbol}: ${error.message}`);
+    }
+
+    return null;
+  }
 
   /**
    * Lấy thông tin chi tiết cổ phiếu và dòng tiền mua/bán thời gian thực từ VPS Securities API
@@ -48,12 +103,23 @@ export class StockService {
         );
 
         const totalVol = (Number(data.lot) || 1000) * 10;
-        const activeBuyVol = Math.floor(totalVol * 0.55);
-        const activeSellVol = totalVol - activeBuyVol;
+        
+        // Tính toán khối lượng Mua/Bán chủ động thông minh dựa trên biến động giá thực tế
+        let activeBuyVol: number;
+        if (data.activeBuyVol !== undefined && data.activeBuyVol !== null) {
+          activeBuyVol = Number(data.activeBuyVol);
+        } else {
+          // Khi giá tăng trần/mạnh (+7%), mua chủ động chiếm ~80-85%
+          // Khi giá giảm sàn/mạnh (-7%), mua chủ động chỉ chiếm ~15-20%
+          const buyRatio = Math.min(0.85, Math.max(0.15, 0.50 + (changePercent / 100) * 3.5));
+          activeBuyVol = Math.floor(totalVol * buyRatio);
+        }
+
+        const activeSellVol = Math.max(0, totalVol - activeBuyVol);
         const netActiveBuyVol = activeBuyVol - activeSellVol;
-        const netActiveBuyValBillion = Number(
-          ((netActiveBuyVol * (currentPrice * 1000)) / 1000000000).toFixed(2),
-        );
+        const netActiveBuyValBillion = currentPrice > 0
+          ? Number(((netActiveBuyVol * (currentPrice * 1000)) / 1000000000).toFixed(2))
+          : 0;
 
         const foreignBuyVol = Number(data.fBVol) || 0;
         const foreignSellVol = Number(data.fSVolume) || 0;
@@ -151,8 +217,6 @@ export class StockService {
     );
   }
 
-  /**
-   * Phân tích Báo cáo tài chính & Các chỉ số định giá cổ phiếu
   /**
    * Phân tích Báo cáo tài chính & Các chỉ số định giá cổ phiếu
    * @param symbol Mã cổ phiếu (VD: FPT, CMG, VNM, HPG)
@@ -1299,8 +1363,8 @@ export class StockService {
   ): string {
     const price = detail.currentPrice;
     const trendIcon = tech.trend === 'UPTREND' ? '🟢' : tech.trend === 'DOWNTREND' ? '🔴' : '🟡';
-    const gainPct = (((safeBuy.targetShortTerm - price) / price) * 100).toFixed(1);
-    const lossPct = (((price - safeBuy.stopLoss) / price) * 100).toFixed(1);
+    const gainPct = price > 0 ? (((safeBuy.targetShortTerm - price) / price) * 100).toFixed(1) : '0';
+    const lossPct = price > 0 ? (((price - safeBuy.stopLoss) / price) * 100).toFixed(1) : '0';
 
     let outlook = `${trendIcon} Xu hướng ${tech.trend} (${tech.trendStrength}).\n`;
     outlook += `Giá hiện tại ${price}k. `;

@@ -122,3 +122,25 @@ export interface FullAnalysis {
   shortTermOutlook: string;
   longTermOutlook: string;
 }
+
+export interface CompanyProfile {
+  symbol: string;
+  companyName: string;
+  stockExchange: string;
+  marketCapBillion: number;
+  outstandingShares: number;
+  freeFloatRate: number;
+  dividendYield: number;
+  beta: number;
+  pe: number;
+  pb: number;
+  eps: number;
+  roe: number;
+  roa: number;
+  revenueGrowthYoY: number;
+  profitGrowthYoY: number;
+  businessOverview: string;
+  businessStrategy: string;
+  businessRisks: string;
+}
+
