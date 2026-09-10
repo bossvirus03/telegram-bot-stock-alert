@@ -8,6 +8,7 @@ import { WatchlistModule } from './watchlist/watchlist.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { CronModule } from './cron/cron.module';
 import { AiModule } from './ai/ai.module';
+import { MacroModule } from './macro/macro.module';
 
 @Controller()
 class HelloController {
@@ -30,6 +31,7 @@ class HelloController {
     TelegramModule,
     CronModule,
     AiModule,
+    MacroModule,
   ],
   controllers: [HelloController],
 })

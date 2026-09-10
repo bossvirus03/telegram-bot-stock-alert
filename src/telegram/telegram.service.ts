@@ -5,6 +5,7 @@ import { WatchlistService } from '../watchlist/watchlist.service';
 import { StockService } from '../stock/stock.service';
 import { NewsService } from '../news/news.service';
 import { AiService } from '../ai/ai.service';
+import { MacroService } from '../macro/macro.service';
 
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
@@ -26,6 +27,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly stockService: StockService,
     private readonly newsService: NewsService,
     private readonly aiService: AiService,
+    private readonly macroService: MacroService,
   ) {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (!token) {
@@ -69,12 +71,17 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 • Dùng lệnh <code>/analysis MÃ</code> (VD: <code>/analysis SSI</code> hoặc <code>/analysis FPT</code>)
   <i>👉 Bot tự động bóc tách tin tức báo chí mới nhất, phân tích bối cảnh vĩ mô, dòng vốn quỹ ngoại ETF, game doanh nghiệp, BCTC, chỉ số tài chính, ban lãnh đạo & điểm mua kỹ thuật!</i>
 
+🚨 <b>CẢNH BÁO VĨ MÔ TỨC THÌ (CPI/PPI/NFP/FED):</b>
+• Dùng lệnh <code>/calendar</code> hoặc <code>/macro</code> để xem lịch sự kiện hôm nay.
+  <i>👉 Bot tự động phát hiện số liệu công bố Actual + Forecast + Previous và báo NGAY LẬP TỨC qua Telegram!</i>
+
 🤖 <b>TRÒ CHUYỆN & HỎI ĐÁP VỚI GEMINI AI:</b>
 • Dùng lệnh <code>/ai CÂU_HỎI</code> (VD: <code>/ai FPT mua vùng giá này được không?</code> hoặc <code>/ai HPG</code>)
 • Sau đó chỉ cần <b>Reply (Trả lời)</b> trực tiếp tin nhắn của Bot để tiếp tục cuộc trò chuyện chuyên sâu với đầy đủ ngữ cảnh!
 
 📋 <b>CÁC LỆNH TÍNH NĂNG NHANH:</b>
 🏛️ <code>/analysis MÃ</code> - Báo cáo phân tích toàn diện 7 trụ cột (VD: <code>/analysis SSI</code>)
+🌍 <code>/calendar</code> - Lịch sự kiện kinh tế vĩ mô hôm nay (CPI, PPI, NFP, Thất nghiệp...)
 ➕ <code>/add MÃ</code> - Thêm cổ phiếu vào danh mục theo dõi (VD: <code>/add FPT</code>)
 ➖ <code>/remove MÃ</code> - Xóa cổ phiếu khỏi danh mục (VD: <code>/remove FPT</code>)
 📋 <code>/watchlist</code> - Bảng giá & dòng tiền thời gian thực danh mục đang theo dõi
@@ -428,6 +435,22 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
         await this.handleComprehensiveAnalysis(ctx, symbol);
       } catch (error) {
         this.logger.error(`Lỗi xử lý click button Analysis: ${error.message}`);
+      }
+    });
+
+    // 12. Lệnh /calendar hoặc /macro hoặc /forex - Xem lịch kinh tế vĩ mô hôm nay
+    this.bot.command(['calendar', 'macro', 'forex'], async (ctx) => {
+      const chatId = ctx.chat.id.toString();
+      const username = ctx.from?.username || ctx.from?.first_name;
+      await this.watchlistService.registerUser(chatId, username);
+
+      try {
+        await ctx.sendChatAction('typing');
+        const text = await this.macroService.getTodayScheduleText();
+        await ctx.replyWithHTML(text);
+      } catch (error: any) {
+        this.logger.error(`Lỗi lệnh /calendar: ${error.message}`);
+        await ctx.replyWithHTML(`⚠️ Không thể lấy lịch kinh tế vĩ mô: ${error.message}`);
       }
     });
 

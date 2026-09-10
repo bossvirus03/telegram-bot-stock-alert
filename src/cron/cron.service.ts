@@ -5,6 +5,7 @@ import { StockService } from '../stock/stock.service';
 import { TelegramService } from '../telegram/telegram.service';
 import { StockDetail } from '../stock/stock.interface';
 import { Markup } from 'telegraf';
+import { MacroService } from '../macro/macro.service';
 
 @Injectable()
 export class CronService implements OnModuleInit, OnModuleDestroy {
@@ -15,12 +16,14 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
 
   private newsIntervalId: NodeJS.Timeout | null = null;
   private flowIntervalId: NodeJS.Timeout | null = null;
+  private macroTimeoutId: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly newsService: NewsService,
     private readonly watchlistService: WatchlistService,
     private readonly stockService: StockService,
     private readonly telegramService: TelegramService,
+    private readonly macroService: MacroService,
   ) {}
 
   onModuleInit() {
@@ -44,6 +47,13 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Lỗi trong vòng lặp Instant Flow Monitor: ${err.message}`);
       });
     }, 15000);
+
+    // 3. Vòng lặp theo dõi kinh tế vĩ mô tức thì (CPI/PPI/NFP/ForexFactory - Adaptive Fast Polling)
+    setTimeout(() => {
+      this.runMacroMonitoringCycle().catch((err) => {
+        this.logger.error(`Lỗi khởi chạy Macro Monitor ban đầu: ${err.message}`);
+      });
+    }, 3000);
   }
 
   onModuleDestroy() {
@@ -54,6 +64,10 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
     if (this.flowIntervalId) {
       clearInterval(this.flowIntervalId);
       this.flowIntervalId = null;
+    }
+    if (this.macroTimeoutId) {
+      clearTimeout(this.macroTimeoutId);
+      this.macroTimeoutId = null;
     }
     this.logger.log('🛑 Cron service đã hủy tất cả background timers an toàn.');
   }
@@ -240,4 +254,67 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
       }
     }
   }
+
+  /**
+   * VÒNG LẶP THEO DÕI & CẢNH BÁO TỨC THÌ DỮ LIỆU KINH TẾ VĨ MÔ (CPI/PPI/NFP...)
+   * Sử dụng cơ chế Adaptive Polling:
+   * - 4 giây / lần: khi đang trong khung giờ vàng có tin CPI/PPI/NFP chuẩn bị ra hoặc vừa ra
+   * - 30 giây / lần: khi ở ngoài khung giờ ra tin để tiết kiệm tài nguyên
+   */
+  async runMacroMonitoringCycle() {
+    let nextDelayMs = 30000;
+
+    try {
+      // 1. Tải dữ liệu các sự kiện kinh tế
+      const events = await this.macroService.fetchEvents();
+
+      // 2. Tìm các sự kiện quan trọng vừa có kết quả Actual mà chưa từng báo
+      const newlyReleased = this.macroService.getNewlyReleasedEvents(events);
+
+      if (newlyReleased.length > 0) {
+        const allUsers = await this.watchlistService.getAllUsers();
+
+        for (const event of newlyReleased) {
+          const analysis = this.macroService.analyzeEvent(event);
+          const message = this.macroService.formatTelegramMessage(analysis);
+
+          this.logger.log(
+            `📢 PHÁT HIỆN SỐ LIỆU VĨ MÔ MỚI: ${event.country} - ${event.title} (Actual: ${event.actual} | Forecast: ${event.forecast} | Previous: ${event.previous})`,
+          );
+
+          // Broadcast ngay lập tức tới toàn bộ người dùng Telegram đã kích hoạt bot
+          for (const user of allUsers) {
+            try {
+              await this.telegramService.sendMessage(user.chatId, message);
+            } catch (err: any) {
+              this.logger.error(`Lỗi gửi tin vĩ mô tới user ${user.chatId}: ${err.message}`);
+            }
+          }
+
+          // Đánh dấu đã báo để không bao giờ gửi trùng
+          await this.macroService.markEventAsAlerted(event);
+        }
+      }
+
+      // 3. Tự động chuyển tần suất: Nếu có tin quan trọng sắp ra trong 5 phút tới -> Fast Polling 4s
+      const hasPendingNear = this.macroService.hasPendingEventsNearRelease(events);
+      if (hasPendingNear) {
+        nextDelayMs = 4000; // Tăng tốc độ quét lên 4s để bắt số liệu tức thì!
+        this.logger.debug('⚡ Chế độ Turbo Fast Polling (4s) đang kích hoạt cho sự kiện vĩ mô sắp công bố!');
+      } else {
+        nextDelayMs = 30000; // 30s bình thường
+      }
+    } catch (err: any) {
+      this.logger.error(`Lỗi trong chu kỳ Macro Monitoring: ${err.message}`);
+      nextDelayMs = 30000;
+    } finally {
+      // Lên lịch cho chu kỳ tiếp theo
+      this.macroTimeoutId = setTimeout(() => {
+        this.runMacroMonitoringCycle().catch((e) => {
+          this.logger.error(`Lỗi kích hoạt chu kỳ Macro Monitoring tiếp theo: ${e.message}`);
+        });
+      }, nextDelayMs);
+    }
+  }
 }
+

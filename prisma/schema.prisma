@@ -50,3 +50,18 @@ model StockAlertLog {
 
   @@map("stock_alert_logs")
 }
+
+model MacroAlertLog {
+  id        Int      @id @default(autoincrement())
+  eventId   String   @unique
+  title     String
+  country   String
+  eventDate DateTime
+  actual    String
+  forecast  String?
+  previous  String?
+  createdAt DateTime @default(now())
+
+  @@map("macro_alert_logs")
+}
+
