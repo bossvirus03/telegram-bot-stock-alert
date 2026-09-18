@@ -82,6 +82,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 📋 <b>CÁC LỆNH TÍNH NĂNG NHANH:</b>
 🏛️ <code>/analysis MÃ</code> - Báo cáo phân tích toàn diện 7 trụ cột (VD: <code>/analysis SSI</code>)
 🌍 <code>/calendar</code> - Lịch sự kiện kinh tế vĩ mô hôm nay (CPI, PPI, NFP, Thất nghiệp...)
+⚙️ <code>/settings</code> - Cài đặt bộ lọc mức độ cảnh báo vĩ mô tức thì (Cao/TB/Thấp)
 ➕ <code>/add MÃ</code> - Thêm cổ phiếu vào danh mục theo dõi (VD: <code>/add FPT</code>)
 ➖ <code>/remove MÃ</code> - Xóa cổ phiếu khỏi danh mục (VD: <code>/remove FPT</code>)
 📋 <code>/watchlist</code> - Bảng giá & dòng tiền thời gian thực danh mục đang theo dõi
@@ -446,12 +447,93 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
 
       try {
         await ctx.sendChatAction('typing');
-        const text = await this.macroService.getTodayScheduleText();
-        await ctx.replyWithHTML(text);
+        const userLevels = await this.watchlistService.getUserMacroAlertLevels(chatId);
+        const text = await this.macroService.getTodayScheduleText(userLevels);
+        const keyboard = Markup.inlineKeyboard([
+          [Markup.button.callback('⚙️ Cài đặt bộ lọc vĩ mô', 'macro_open_settings')],
+        ]);
+        await ctx.replyWithHTML(text, keyboard);
       } catch (error: any) {
         this.logger.error(`Lỗi lệnh /calendar: ${error.message}`);
         await ctx.replyWithHTML(`⚠️ Không thể lấy lịch kinh tế vĩ mô: ${error.message}`);
       }
+    });
+
+    // 13. Lệnh /settings hoặc /macro_settings - Cài đặt mức độ ảnh hưởng cảnh báo vĩ mô
+    this.bot.command(['settings', 'macro_settings', 'macrosetting', 'setting'], async (ctx) => {
+      const chatId = ctx.chat.id.toString();
+      const username = ctx.from?.username || ctx.from?.first_name;
+      await this.watchlistService.registerUser(chatId, username);
+
+      const levels = await this.watchlistService.getUserMacroAlertLevels(chatId);
+      const { text, keyboard } = this.renderMacroSettingsMenu(levels);
+      await ctx.replyWithHTML(text, keyboard);
+    });
+
+    // Lắng nghe mở menu cài đặt vĩ mô từ nút bấm
+    this.bot.action('macro_open_settings', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      await ctx.answerCbQuery();
+      const levels = await this.watchlistService.getUserMacroAlertLevels(chatId);
+      const { text, keyboard } = this.renderMacroSettingsMenu(levels);
+      await ctx.replyWithHTML(text, keyboard);
+    });
+
+    // Lắng nghe xem lịch hôm nay từ menu cài đặt
+    this.bot.action('macro_view_today', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      await ctx.answerCbQuery('📅 Đang tải lịch sự kiện hôm nay...');
+      const userLevels = await this.watchlistService.getUserMacroAlertLevels(chatId);
+      const text = await this.macroService.getTodayScheduleText(userLevels);
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('⚙️ Cài đặt bộ lọc vĩ mô', 'macro_open_settings')],
+      ]);
+      await ctx.replyWithHTML(text, keyboard);
+    });
+
+    // Lắng nghe Toggle từng mức độ ảnh hưởng (-1, 0, 1)
+    this.bot.action(/^macro_toggle:(-?\d+)$/, async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const level = parseInt(ctx.match[1], 10);
+      const updated = await this.watchlistService.toggleUserMacroAlertLevel(chatId, level);
+      const isEnabled = updated.includes(level);
+      const label = this.macroService.getImpactLabel(level);
+
+      await ctx.answerCbQuery(
+        isEnabled ? `✅ Đã BẬT: ${label}` : `❌ Đã TẮT: ${label}`,
+      );
+
+      const { text, keyboard } = this.renderMacroSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // Lắng nghe Bật tất cả các mức độ
+    this.bot.action('macro_set:all', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const updated = await this.watchlistService.updateUserMacroAlertLevels(chatId, [1, 0, -1]);
+      await ctx.answerCbQuery('🔔 Đã BẬT tất cả các mức độ cảnh báo!');
+      const { text, keyboard } = this.renderMacroSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // Lắng nghe Khôi phục về mặc định (Cao + Trung bình)
+    this.bot.action('macro_set:default', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const updated = await this.watchlistService.updateUserMacroAlertLevels(chatId, [1, 0]);
+      await ctx.answerCbQuery('🎯 Đã khôi phục về mặc định: Cao + Trung bình!');
+      const { text, keyboard } = this.renderMacroSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
     });
 
     // 13. Lệnh /ai <CÂU HỎI> (hoặc /chat, /ask, /gemini) để trò chuyện và phân tích chuyên sâu với Gemini AI
@@ -1004,5 +1086,72 @@ ${marketNewsStr || '  • Thị trường duy trì thanh khoản ổn định'}
     } catch (error) {
       this.logger.error(`Lỗi khi gửi ảnh tới Telegram Chat ID ${chatId}: ${error.message}`);
     }
+  }
+
+  /**
+   * Tạo nội dung giao diện HTML và inline keyboard cho menu cài đặt bộ lọc vĩ mô
+   */
+  private renderMacroSettingsMenu(levels: number[]) {
+    const isHigh = levels.includes(1);
+    const isMedium = levels.includes(0);
+    const isLow = levels.includes(-1);
+
+    const activeCount = levels.length;
+    let summaryTag = '';
+    if (activeCount === 3) {
+      summaryTag = '🔔 <b>BẬT TẤT CẢ (3/3 mức)</b>';
+    } else if (activeCount === 0) {
+      summaryTag = '🔕 <b>ĐANG TẮT TẤT CẢ (Tạm ngưng nhận tin vĩ mô)</b>';
+    } else {
+      summaryTag = `🎯 <b>ĐANG BẬT ${activeCount}/3 mức</b>`;
+    }
+
+    const text = `
+⚙️ <b>CÀI ĐẶT BỘ LỌC CẢNH BÁO VĨ MÔ TỨC THÌ</b>
+${summaryTag}
+
+<i>Chọn các mức độ ảnh hưởng của sự kiện kinh tế bạn muốn nhận thông báo tức thì (Real-time Instant Alert) khi vừa công bố số liệu Thực tế (Actual):</i>
+
+• ⭐⭐⭐ <b>Cao (High Impact):</b> ${isHigh ? '🟢 <b>BẬT</b>' : '⚪ <b>TẮT</b>'}
+  <i>(Fed lãi suất, CPI, Non-Farm Payrolls NFP, GDP...)</i>
+
+• ⭐⭐ <b>Trung bình (Medium Impact):</b> ${isMedium ? '🟢 <b>BẬT</b>' : '⚪ <b>TẮT</b>'}
+  <i>(PPI, Đơn trợ cấp thất nghiệp Jobless claims, Doanh số bán lẻ, PMI...)</i>
+
+• ⭐ <b>Thấp (Low Impact):</b> ${isLow ? '🟢 <b>BẬT</b>' : '⚪ <b>TẮT</b>'}
+  <i>(Đấu thầu trái phiếu, các khảo sát nhỏ...)</i>
+
+💡 <i>Nhấn vào các nút bên dưới để Bật/Tắt từng mức độ theo mong muốn:</i>
+    `.trim();
+
+    const keyboard = Markup.inlineKeyboard([
+      [
+        Markup.button.callback(
+          `${isHigh ? '✅' : '❌'} ⭐⭐⭐ Cao (High Impact)`,
+          'macro_toggle:1',
+        ),
+      ],
+      [
+        Markup.button.callback(
+          `${isMedium ? '✅' : '❌'} ⭐⭐ Trung bình (Medium Impact)`,
+          'macro_toggle:0',
+        ),
+      ],
+      [
+        Markup.button.callback(
+          `${isLow ? '✅' : '❌'} ⭐ Thấp (Low Impact)`,
+          'macro_toggle:-1',
+        ),
+      ],
+      [
+        Markup.button.callback('🔔 Bật tất cả', 'macro_set:all'),
+        Markup.button.callback('🎯 Mặc định (Cao + TB)', 'macro_set:default'),
+      ],
+      [
+        Markup.button.callback('📅 Xem lịch kinh tế hôm nay', 'macro_view_today'),
+      ],
+    ]);
+
+    return { text, keyboard };
   }
 }

@@ -282,14 +282,30 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
             `📢 PHÁT HIỆN SỐ LIỆU VĨ MÔ MỚI: ${event.country} - ${event.title} (Actual: ${event.actual} | Forecast: ${event.forecast} | Previous: ${event.previous})`,
           );
 
-          // Broadcast ngay lập tức tới toàn bộ người dùng Telegram đã kích hoạt bot
+          // Broadcast ngay lập tức tới những người dùng Telegram có bật mức độ tương ứng
+          let actuallySentCount = 0;
           for (const user of allUsers) {
+            const userLevels =
+              user.macroAlertLevels && user.macroAlertLevels.length > 0
+                ? user.macroAlertLevels
+                : [1, 0]; // Mặc định: Cao (1) và Trung bình (0)
+
+            // Bỏ qua nếu người dùng không chọn nhận mức độ ảnh hưởng này
+            if (!userLevels.includes(event.importance)) {
+              continue;
+            }
+
             try {
               await this.telegramService.sendMessage(user.chatId, message);
+              actuallySentCount++;
             } catch (err: any) {
               this.logger.error(`Lỗi gửi tin vĩ mô tới user ${user.chatId}: ${err.message}`);
             }
           }
+
+          this.logger.log(
+            `📤 Đã phát cảnh báo sự kiện "${event.title}" (${event.country}) tới ${actuallySentCount}/${allUsers.length} người dùng phù hợp.`,
+          );
 
           // Đánh dấu đã báo để không bao giờ gửi trùng
           await this.macroService.markEventAsAlerted(event);

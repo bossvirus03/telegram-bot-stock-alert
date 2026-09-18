@@ -111,9 +111,18 @@ export class MacroService {
   }
 
   /**
-   * Lọc ra các sự kiện then chốt (High impact hoặc các tin tức quan trọng CPI, PPI, NFP, Fed, Jobless, Retail, GDP, PMI...)
+   * Trả về nhãn mô tả mức độ ảnh hưởng tương ứng với giá trị importance
    */
-  filterKeyEvents(events: EconomicEvent[]): EconomicEvent[] {
+  getImpactLabel(importance: number): string {
+    if (importance === 1) return '⭐⭐⭐ Cao (High Impact)';
+    if (importance === -1) return '⭐ Thấp (Low Impact)';
+    return '⭐⭐ Trung bình (Medium Impact)';
+  }
+
+  /**
+   * Lọc ra các sự kiện then chốt theo các mức độ ảnh hưởng (allowedImportances: 1, 0, -1)
+   */
+  filterKeyEvents(events: EconomicEvent[], allowedImportances?: number[]): EconomicEvent[] {
     const keyKeywords = [
       'cpi',
       'consumer price index',
@@ -142,23 +151,31 @@ export class MacroService {
     const majorCountries = ['US', 'EU', 'GB', 'JP', 'CN', 'VN', 'DE'];
 
     return events.filter((e) => {
+      const countryCode = (e.country || '').toUpperCase();
+      const isMajorCountry = majorCountries.includes(countryCode);
+      if (!isMajorCountry) return false;
+
+      // Nếu có truyền danh sách allowedImportances thì bắt buộc importance phải thuộc danh sách đó
+      if (allowedImportances && allowedImportances.length > 0) {
+        if (!allowedImportances.includes(e.importance)) {
+          return false;
+        }
+      }
+
       const titleLower = (e.title || '').toLowerCase();
       const indicatorLower = (e.indicator || '').toLowerCase();
-      const isHighImpact = e.importance === 1;
-
       const isKeyIndicator = keyKeywords.some(
         (kw) => titleLower.includes(kw) || indicatorLower.includes(kw),
       );
 
-      const isMajorCountry = majorCountries.includes((e.country || '').toUpperCase());
+      // Nếu là High Impact (1) hoặc Medium Impact (0) hoặc từ khóa vĩ mô trọng yếu
+      if (e.importance === 1 || e.importance === 0 || isKeyIndicator) return true;
 
-      // Ưu tiên:
-      // 1. Nếu là tin thuộc US/EU/GB/CN/VN có từ khoá CPI, PPI, NFP, Jobless, FOMC, GDP, Retail, PMI...
-      if (isKeyIndicator && isMajorCountry) return true;
-      // 2. Hoặc tin High Impact (⭐⭐⭐) của các nước lớn
-      if (isHighImpact && isMajorCountry) return true;
-      // 3. Hoặc bất kỳ tin CPI, PPI, NFP nào của US
-      if (e.country === 'US' && (titleLower.includes('cpi') || titleLower.includes('ppi') || titleLower.includes('payrolls'))) return true;
+      // Nếu người dùng bật mức Thấp (-1)
+      if (allowedImportances?.includes(-1) && e.importance === -1) return true;
+
+      // Mặc định cho phép tất cả các sự kiện nếu không chỉ định allowedImportances cụ thể
+      if (!allowedImportances) return true;
 
       return false;
     });
@@ -166,12 +183,13 @@ export class MacroService {
 
   /**
    * Kiểm tra xem hiện tại có sự kiện nào sắp diễn ra (trong vòng 5 phút)
-   * hoặc vừa diễn ra cách đây dưới 10 phút mà chưa có kết quả Actual không.
+   * hoặc vừa diễn ra cách đây dưới 15 phút mà chưa có kết quả Actual không.
    * => Dùng để kích hoạt chế độ Fast Polling (3 - 5 giây / lần)
    */
   hasPendingEventsNearRelease(events: EconomicEvent[]): boolean {
     const nowMs = Date.now();
-    const keyEvents = this.filterKeyEvents(events);
+    // Chỉ kích hoạt Fast Polling với các tin High & Medium trọng yếu
+    const keyEvents = this.filterKeyEvents(events, [1, 0]);
 
     return keyEvents.some((e) => {
       // Nếu đã có kết quả và đã báo rồi thì bỏ qua
@@ -191,8 +209,8 @@ export class MacroService {
   /**
    * Tìm các sự kiện quan trọng vừa có kết quả Actual mà chưa từng được báo
    */
-  getNewlyReleasedEvents(events: EconomicEvent[]): EconomicEvent[] {
-    const keyEvents = this.filterKeyEvents(events);
+  getNewlyReleasedEvents(events: EconomicEvent[], allowedImportances?: number[]): EconomicEvent[] {
+    const keyEvents = this.filterKeyEvents(events, allowedImportances);
 
     return keyEvents.filter((e) => {
       // Đã có Actual
@@ -262,7 +280,7 @@ export class MacroService {
     const dateStr = vnTime.toISOString().slice(0, 10).split('-').reverse().join('/');
     const timeStr = vnTime.toISOString().slice(11, 16);
 
-    const impactLevel = event.importance === 1 ? '⭐⭐⭐ Cao (High Impact)' : '⭐⭐ Trung bình (Medium Impact)';
+    const impactLevel = this.getImpactLabel(event.importance);
 
     const actualNum = typeof event.actual === 'number' ? event.actual : parseFloat(String(event.actual));
     const forecastNum = typeof event.forecast === 'number' ? event.forecast : parseFloat(String(event.forecast));
@@ -379,9 +397,9 @@ ${analysis.assessment}
   /**
    * Tổng hợp lịch sự kiện kinh tế quan trọng trong ngày hôm nay (dùng cho lệnh /calendar hoặc /macro)
    */
-  async getTodayScheduleText(): Promise<string> {
+  async getTodayScheduleText(userLevels?: number[]): Promise<string> {
     const events = await this.fetchEvents();
-    const keyEvents = this.filterKeyEvents(events);
+    const keyEvents = this.filterKeyEvents(events, userLevels);
 
     const now = new Date();
     const todayStr = new Date(now.getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10);
@@ -393,26 +411,37 @@ ${analysis.assessment}
     });
 
     if (todayEvents.length === 0) {
-      return `📅 <b>LỊCH KINH TẾ VĨ MÔ HÔM NAY (${todayStr.split('-').reverse().join('/')})</b>\n\nKhông có tin tức kinh tế vĩ mô trọng yếu (CPI/PPI/NFP/FOMC) được lên lịch công bố trong ngày hôm nay.`;
+      return `📅 <b>LỊCH KINH TẾ VĨ MÔ HÔM NAY (${todayStr.split('-').reverse().join('/')})</b>\n\nKhông có tin tức kinh tế vĩ mô phù hợp với bộ lọc được lên lịch công bố trong ngày hôm nay.`;
     }
 
     // Sắp xếp theo thứ tự thời gian
     todayEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
     let message = `📅 <b>LỊCH KINH TẾ VĨ MÔ QUAN TRỌNG HÔM NAY (${todayStr.split('-').reverse().join('/')})</b>\n`;
+    if (userLevels && userLevels.length > 0) {
+      const filterTags = userLevels
+        .map((lvl) => {
+          if (lvl === 1) return '⭐⭐⭐ Cao';
+          if (lvl === -1) return '⭐ Thấp';
+          return '⭐⭐ Trung bình';
+        })
+        .join(', ');
+      message += `🎯 <i>Bộ lọc hiện tại của bạn: ${filterTags}</i>\n`;
+    }
     message += `<i>👉 Bot sẽ tự động bắn thông báo ngay lập tức khi số liệu Actual vừa được công bố!</i>\n\n`;
 
     for (const e of todayEvents) {
       const flag = this.getCountryFlag(e.country);
       const vnTime = new Date(new Date(e.date).getTime() + 7 * 3600 * 1000).toISOString().slice(11, 16);
       const unit = e.unit || '';
+      const stars = e.importance === 1 ? '⭐⭐⭐' : e.importance === -1 ? '⭐' : '⭐⭐';
 
       const hasActual = e.actual !== null && e.actual !== undefined && e.actual !== '';
       const actualStr = hasActual ? `<b>${e.actual}${unit}</b> ✅` : '<i>Chờ ra tin</i> ⏳';
       const forecastStr = e.forecast !== null && e.forecast !== undefined ? `${e.forecast}${unit}` : 'N/A';
       const prevStr = e.previous !== null && e.previous !== undefined ? `${e.previous}${unit}` : 'N/A';
 
-      message += `⏰ <b>${vnTime}</b> | ${flag} <b>${e.title}</b>\n`;
+      message += `⏰ <b>${vnTime}</b> | ${stars} ${flag} <b>${e.title}</b>\n`;
       message += `   • Thực tế (Actual): ${actualStr}\n`;
       message += `   • Dự báo (Forecast): <code>${forecastStr}</code> | Kỳ trước: <code>${prevStr}</code>\n\n`;
     }
