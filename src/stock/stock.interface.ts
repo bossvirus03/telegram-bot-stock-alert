@@ -16,6 +16,12 @@ export interface StockDetail {
   foreignSellVolume: number;
   foreignNetBuyVolume: number;
   flowTrend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  lastTradePrice?: number; // Mức giá của lệnh vừa khớp (VD: 245.8)
+  lastTradeVolume?: number; // Khối lượng của lệnh vừa khớp (CP)
+  lastTradeValue?: number; // Giá trị của lệnh vừa khớp (Tỷ VNĐ)
+  lastTradeSide?: 'BUY' | 'SELL' | 'UNKNOWN'; // Chiều lệnh vừa vào (MUA / BÁN)
+  bidPrice1?: number; // Giá chào mua tốt nhất
+  askPrice1?: number; // Giá chào bán tốt nhất
   updatedAt: Date;
 }
 

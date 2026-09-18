@@ -125,6 +125,32 @@ export class StockService {
         const foreignSellVol = Number(data.fSVolume) || 0;
         const foreignNetBuyVol = foreignBuyVol - foreignSellVol;
 
+        // Parse giá chào mua tốt nhất (bid 1) và giá chào bán tốt nhất (ask 1)
+        const bidPrice1 = data.g1 ? Number(data.g1.split('|')[0]) || 0 : 0;
+        const askPrice1 = data.g4 ? Number(data.g4.split('|')[0]) || 0 : 0;
+
+        // Thông tin chi tiết về lệnh vừa khớp (Last matched trade/order)
+        const lastTradePrice = Number(data.lastPrice || currentPrice);
+        const lastTradeVolume = (Number(data.lastVolume) || 0) * 10;
+        const lastTradeValue = lastTradePrice > 0 && lastTradeVolume > 0
+          ? Number(((lastTradeVolume * (lastTradePrice * 1000)) / 1000000000).toFixed(4))
+          : 0;
+
+        let lastTradeSide: 'BUY' | 'SELL' | 'UNKNOWN' = 'UNKNOWN';
+        if (data.side === 'B' || data.side === 'M' || data.side === 'BUY') {
+          lastTradeSide = 'BUY';
+        } else if (data.side === 'S' || data.side === 'SELL') {
+          lastTradeSide = 'SELL';
+        } else if (askPrice1 > 0 && lastTradePrice >= askPrice1) {
+          lastTradeSide = 'BUY'; // Khớp thẳng vào giá chào bán -> Mua chủ động
+        } else if (bidPrice1 > 0 && lastTradePrice <= bidPrice1) {
+          lastTradeSide = 'SELL'; // Khớp thẳng vào giá chào mua -> Bán chủ động
+        } else if (change > 0) {
+          lastTradeSide = 'BUY';
+        } else if (change < 0) {
+          lastTradeSide = 'SELL';
+        }
+
         let flowTrend: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
         if (changePercent > 1.0 || netActiveBuyValBillion > 2) {
           flowTrend = "BULLISH";
@@ -152,6 +178,12 @@ export class StockService {
           foreignSellVolume: foreignSellVol,
           foreignNetBuyVolume: foreignNetBuyVol,
           flowTrend,
+          lastTradePrice,
+          lastTradeVolume,
+          lastTradeValue,
+          lastTradeSide,
+          bidPrice1,
+          askPrice1,
           updatedAt: new Date(),
         };
       }

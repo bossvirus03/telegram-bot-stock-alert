@@ -6,6 +6,7 @@ import { TelegramService } from '../telegram/telegram.service';
 import { StockDetail } from '../stock/stock.interface';
 import { Markup } from 'telegraf';
 import { MacroService } from '../macro/macro.service';
+import { TelegramUser } from '@prisma/client';
 
 @Injectable()
 export class CronService implements OnModuleInit, OnModuleDestroy {
@@ -171,8 +172,33 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
     }
   }
 
+  // Ghi nhớ snapshot dữ liệu gần nhất của từng mã cổ phiếu để tính chênh lệch lệnh mới
+  private readonly stockSnapshotMap = new Map<
+    string,
+    {
+      totalVolume: number;
+      activeBuyVolume: number;
+      activeSellVolume: number;
+      netActiveBuyValue: number;
+      currentPrice: number;
+      timestamp: number;
+    }
+  >();
+
   /**
-   * PHÁT HIỆN & THÔNG BÁO KHI CÓ DÒNG TIỀN ĐỘT BIẾN VÀO / RA TRONG PHIÊN
+   * Định dạng số tiền VNĐ dễ nhìn (Tỷ VNĐ hoặc Triệu VNĐ)
+   */
+  private formatMoneyVND(billion: number): string {
+    const abs = Math.abs(billion);
+    if (abs >= 1) {
+      return `${abs.toFixed(2)} Tỷ VNĐ`;
+    }
+    const million = Math.round(abs * 1000);
+    return `${million.toLocaleString('vi-VN')} Triệu VNĐ`;
+  }
+
+  /**
+   * PHÁT HIỆN & THÔNG BÁO KHI CÓ LỆNH LỚN HOẶC DÒNG TIỀN ĐỘT BIẾN VÀO / RA TRONG PHIÊN
    */
   async checkInstantFlowAlerts() {
     // 1. Kiểm tra giờ giao dịch thị trường chứng khoán Việt Nam
@@ -206,50 +232,125 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
       }),
     );
 
-    // 4. Đối chiếu và phát cảnh báo cho từng User
-    for (const user of userWatchlists) {
-      for (const symbol of user.symbols) {
-        const detail = stockDetailsMap.get(symbol.toUpperCase());
-        if (!detail) continue;
+    // 4. Đối chiếu chênh lệch giữa 2 nhịp quét để phát hiện chính xác lệnh vừa vào
+    for (const [symbol, detail] of stockDetailsMap.entries()) {
+      const prev = this.stockSnapshotMap.get(symbol);
 
-        const mapKey = `${user.chatId}_${symbol.toUpperCase()}`;
-        const prevNetValue = this.lastNotifiedFlowMap.get(mapKey) ?? 0;
-        const currentNetValue = detail.netActiveBuyValue;
+      // Nếu là lần đầu quét mã này sau khi bot khởi động -> Lưu làm mốc ban đầu, không báo giả
+      if (!prev) {
+        this.stockSnapshotMap.set(symbol, {
+          totalVolume: detail.totalVolume,
+          activeBuyVolume: detail.activeBuyVolume,
+          activeSellVolume: detail.activeSellVolume,
+          netActiveBuyValue: detail.netActiveBuyValue,
+          currentPrice: detail.currentPrice,
+          timestamp: Date.now(),
+        });
+        continue;
+      }
 
-        // Tính giá trị tiền cho lệnh mua và bán chủ động (đơn vị: Tỷ VNĐ)
-        const buyValueBillion = Number(((detail.activeBuyVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2));
-        const sellValueBillion = Number(((detail.activeSellVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2));
+      // Tính biến động phát sinh trong nhịp vừa qua (15 giây)
+      const deltaVolume = Math.max(0, detail.totalVolume - prev.totalVolume);
+      const deltaBuyVol = Math.max(0, detail.activeBuyVolume - prev.activeBuyVolume);
+      const deltaSellVol = Math.max(0, detail.activeSellVolume - prev.activeSellVolume);
+      const deltaNetValue = Number((detail.netActiveBuyValue - prev.netActiveBuyValue).toFixed(2));
 
-        // 1. DÒNG TIỀN MUA LỚN VÀO (Mua ròng >= 3.0 Tỷ VNĐ)
-        if (currentNetValue >= 3.0 && (currentNetValue - prevNetValue >= 1.5 || prevNetValue === 0)) {
+      // Cập nhật snapshot mới nhất
+      this.stockSnapshotMap.set(symbol, {
+        totalVolume: detail.totalVolume,
+        activeBuyVolume: detail.activeBuyVolume,
+        activeSellVolume: detail.activeSellVolume,
+        netActiveBuyValue: detail.netActiveBuyValue,
+        currentPrice: detail.currentPrice,
+        timestamp: Date.now(),
+      });
+
+      // Nếu không có khối lượng giao dịch mới phát sinh trong 15s qua -> Bỏ qua
+      if (deltaVolume === 0 && deltaNetValue === 0) {
+        continue;
+      }
+
+      // Xác định chiều của lệnh / nhịp khớp mới
+      const isBuyDominant = deltaBuyVol > deltaSellVol || (detail.lastTradeSide === 'BUY' && deltaBuyVol > 0);
+      const isSellDominant = deltaSellVol > deltaBuyVol || (detail.lastTradeSide === 'SELL' && deltaSellVol > 0);
+
+      // Khối lượng và giá trị của LỆNH / NHỊP VỪA KHỚP
+      const recentTradeVolume = isBuyDominant
+        ? (deltaBuyVol > 0 ? deltaBuyVol : (detail.lastTradeVolume || deltaVolume))
+        : (isSellDominant ? (deltaSellVol > 0 ? deltaSellVol : (detail.lastTradeVolume || deltaVolume)) : deltaVolume);
+
+      const recentTradeValueBillion = Number(
+        ((recentTradeVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2),
+      );
+
+      // Tổng giá trị Mua / Bán lũy kế cả ngày từ đầu phiên
+      const totalBuyValueBillion = Number(
+        ((detail.activeBuyVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2),
+      );
+      const totalSellValueBillion = Number(
+        ((detail.activeSellVolume * detail.currentPrice * 1000) / 1000000000).toFixed(2),
+      );
+
+      const now = new Date();
+      const timeStr = new Date(now.getTime() + 7 * 3600 * 1000).toISOString().slice(11, 19);
+
+      // Tiêu chí báo động:
+      // 1. Lệnh MUA lớn: Giá trị lệnh vừa vào >= 500 Triệu VNĐ (0.5 Tỷ) HOẶC Mua ròng nhịp này tăng >= 1.0 Tỷ VNĐ
+      const isSignificantBuy = isBuyDominant && (recentTradeValueBillion >= 0.5 || deltaNetValue >= 1.0);
+
+      // 2. Lệnh BÁN xả lớn: Giá trị lệnh vừa xả >= 500 Triệu VNĐ (0.5 Tỷ) HOẶC Bán ròng nhịp này xả >= 1.0 Tỷ VNĐ
+      const isSignificantSell = isSellDominant && (recentTradeValueBillion >= 0.5 || deltaNetValue <= -1.0);
+
+      if (!isSignificantBuy && !isSignificantSell) {
+        continue;
+      }
+
+      // Gửi thông báo tới các user đang theo dõi mã này
+      for (const user of userWatchlists) {
+        if (!user.symbols.includes(symbol)) continue;
+
+        if (isSignificantBuy) {
           const alertMessage = `
-⚡ <b>PHÁT HIỆN DÒNG TIỀN MUA VÀO - ${symbol.toUpperCase()}</b>
+⚡ <b>PHÁT HIỆN LỆNH MUA LỚN VỪA VÀO - ${symbol}</b>
 
-🟢 <b>Mã CP:</b> <b>${symbol.toUpperCase()}</b>
-💵 <b>Giá trị Mua chủ động:</b> <b>${buyValueBillion >= 1 ? `${buyValueBillion} Tỷ VNĐ` : `${(buyValueBillion * 1000).toFixed(0)} Triệu VNĐ`}</b>
-📦 <b>Khối lượng Mua:</b> <b>${detail.activeBuyVolume.toLocaleString('vi-VN')} CP</b>
-🏷️ <b>Mức giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
-🔥 <b>Dòng tiền Mua ròng:</b> <b>+${currentNetValue} Tỷ VNĐ</b>
+🟢 <b>Mã CP:</b> <b>${symbol}</b> | Giá khớp: <b>${detail.currentPrice}k</b> (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
+
+🎯 <b>CHI TIẾT LỆNH VỪA ĐẶT / KHỚP:</b>
+• 💥 <b>Chiều lệnh:</b> 🟢 <b>MUA CHỦ ĐỘNG</b> (Khớp thẳng vào giá Bán)
+• 💵 <b>Giá trị lệnh vừa vào:</b> <b>${this.formatMoneyVND(recentTradeValueBillion)}</b>
+• 📦 <b>Khối lượng lệnh vừa khớp:</b> <b>${recentTradeVolume.toLocaleString('vi-VN')} CP</b>
+• ⏱️ <b>Thời điểm khớp:</b> ${timeStr}
+• 📈 <b>Chênh lệch Mua ròng nhịp này:</b> <b>+${Math.max(0.1, deltaNetValue)} Tỷ VNĐ</b>
+
+📊 <b>BỐI CẢNH DÒNG TIỀN TOÀN PHIÊN (LŨY KẾ):</b>
+• 🟢 Tổng Mua chủ động: <b>${this.formatMoneyVND(totalBuyValueBillion)}</b> (${detail.activeBuyVolume.toLocaleString('vi-VN')} CP)
+• 🔴 Tổng Bán chủ động: <b>${this.formatMoneyVND(totalSellValueBillion)}</b> (${detail.activeSellVolume.toLocaleString('vi-VN')} CP)
+• 🔥 <b>Dòng tiền Mua ròng cả phiên:</b> <b>${detail.netActiveBuyValue > 0 ? '+' : ''}${detail.netActiveBuyValue} Tỷ VNĐ</b>
+• 🏷️ Trạng thái: <b>${detail.flowTrend === 'BULLISH' ? '🟢 Phe Mua áp đảo' : (detail.flowTrend === 'BEARISH' ? '🔴 Phe Bán chiếm ưu thế' : '⚪ Giằng co cân bằng')}</b>
           `.trim();
 
           await this.telegramService.sendMessage(user.chatId, alertMessage);
-          this.lastNotifiedFlowMap.set(mapKey, currentNetValue);
-        }
-
-        // 2. DÒNG TIỀN BÁN LỚN XẢ OUT (Bán ròng <= -3.0 Tỷ VNĐ)
-        else if (currentNetValue <= -3.0 && (currentNetValue - prevNetValue <= -1.5 || prevNetValue === 0)) {
+        } else if (isSignificantSell) {
           const alertMessage = `
-🚨 <b>PHÁT HIỆN DÒNG TIỀN BÁN XẢ - ${symbol.toUpperCase()}</b>
+🚨 <b>PHÁT HIỆN LỆNH BÁN XẢ LỚN - ${symbol}</b>
 
-🔴 <b>Mã CP:</b> <b>${symbol.toUpperCase()}</b>
-💸 <b>Giá trị Bán chủ động:</b> <b>${sellValueBillion >= 1 ? `${sellValueBillion} Tỷ VNĐ` : `${(sellValueBillion * 1000).toFixed(0)} Triệu VNĐ`}</b>
-📦 <b>Khối lượng Bán:</b> <b>${detail.activeSellVolume.toLocaleString('vi-VN')} CP</b>
-🏷️ <b>Mức giá:</b> ${detail.currentPrice}k (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
-💥 <b>Dòng tiền Bán ròng:</b> <b>${currentNetValue} Tỷ VNĐ</b>
+🔴 <b>Mã CP:</b> <b>${symbol}</b> | Giá khớp: <b>${detail.currentPrice}k</b> (${detail.change > 0 ? '+' : ''}${detail.changePercent}%)
+
+🎯 <b>CHI TIẾT LỆNH VỪA ĐẶT / KHỚP:</b>
+• 💥 <b>Chiều lệnh:</b> 🔴 <b>BÁN CHỦ ĐỘNG</b> (Bán thẳng vào giá Mua)
+• 💸 <b>Giá trị lệnh vừa xả:</b> <b>${this.formatMoneyVND(recentTradeValueBillion)}</b>
+• 📦 <b>Khối lượng lệnh vừa khớp:</b> <b>${recentTradeVolume.toLocaleString('vi-VN')} CP</b>
+• ⏱️ <b>Thời điểm khớp:</b> ${timeStr}
+• 📉 <b>Chênh lệch Bán ròng nhịp này:</b> <b>${deltaNetValue} Tỷ VNĐ</b>
+
+📊 <b>BỐI CẢNH DÒNG TIỀN TOÀN PHIÊN (LŨY KẾ):</b>
+• 🟢 Tổng Mua chủ động: <b>${this.formatMoneyVND(totalBuyValueBillion)}</b> (${detail.activeBuyVolume.toLocaleString('vi-VN')} CP)
+• 🔴 Tổng Bán chủ động: <b>${this.formatMoneyVND(totalSellValueBillion)}</b> (${detail.activeSellVolume.toLocaleString('vi-VN')} CP)
+• 💥 <b>Dòng tiền Bán ròng cả phiên:</b> <b>${detail.netActiveBuyValue} Tỷ VNĐ</b>
+• 🏷️ Trạng thái: <b>${detail.flowTrend === 'BULLISH' ? '🟢 Phe Mua áp đảo' : (detail.flowTrend === 'BEARISH' ? '🔴 Phe Bán chiếm ưu thế' : '⚪ Giằng co cân bằng')}</b>
           `.trim();
 
           await this.telegramService.sendMessage(user.chatId, alertMessage);
-          this.lastNotifiedFlowMap.set(mapKey, currentNetValue);
         }
       }
     }
@@ -285,9 +386,10 @@ ${article.summary && article.summary !== article.title ? `<i>${article.summary.s
           // Broadcast ngay lập tức tới những người dùng Telegram có bật mức độ tương ứng
           let actuallySentCount = 0;
           for (const user of allUsers) {
+            const macroAlertLevels = (user as any).macroAlertLevels;
             const userLevels =
-              user.macroAlertLevels && user.macroAlertLevels.length > 0
-                ? user.macroAlertLevels
+              Array.isArray(macroAlertLevels) && macroAlertLevels.length > 0
+                ? macroAlertLevels
                 : [1, 0]; // Mặc định: Cao (1) và Trung bình (0)
 
             // Bỏ qua nếu người dùng không chọn nhận mức độ ảnh hưởng này
