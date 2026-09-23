@@ -11,7 +11,7 @@ async function bootstrap() {
 
   for (let i = 0; i < maxRetries; i++) {
     try {
-      await app.listen(port);
+      await app.listen(port, '0.0.0.0');
       logger.log(`🚀 Stock News & Realtime Flow Bot Backend đã khởi động thành công trên cổng ${port}`);
       break;
     } catch (err: any) {
