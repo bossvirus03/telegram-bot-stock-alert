@@ -8,11 +8,15 @@ generator client {
 }
 
 model TelegramUser {
-  id               Int      @id @default(autoincrement())
-  chatId           String   @unique
-  username         String?
-  macroAlertLevels Int[]    @default([1, 0])
-  createdAt        DateTime @default(now())
+  id                 Int      @id @default(autoincrement())
+  chatId             String   @unique
+  username           String?
+  macroAlertLevels   Int[]    @default([1, 0])
+  xauAlertEnabled    Boolean  @default(true)
+  xauAlertTimeframes String[] @default(["M15", "M30", "H1", "H4", "D1"])
+  xauOverboughtRsi   Float    @default(70)
+  xauOversoldRsi     Float    @default(30)
+  createdAt          DateTime @default(now())
 
   @@map("telegram_users")
 }
@@ -64,5 +68,17 @@ model MacroAlertLog {
   createdAt DateTime @default(now())
 
   @@map("macro_alert_logs")
+}
+
+model XauAlertLog {
+  id        Int      @id @default(autoincrement())
+  timeframe String
+  rsi       Float
+  price     Float
+  alertType String
+  message   String
+  createdAt DateTime @default(now())
+
+  @@map("xau_alert_logs")
 }
 

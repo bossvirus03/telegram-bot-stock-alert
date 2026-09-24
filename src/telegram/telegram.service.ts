@@ -6,6 +6,8 @@ import { StockService } from '../stock/stock.service';
 import { NewsService } from '../news/news.service';
 import { AiService } from '../ai/ai.service';
 import { MacroService } from '../macro/macro.service';
+import { GoldService } from '../gold/gold.service';
+import { UserXauSettings, XauTimeframe } from '../gold/gold.interface';
 
 @Injectable()
 export class TelegramService implements OnModuleInit, OnModuleDestroy {
@@ -28,6 +30,7 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly newsService: NewsService,
     private readonly aiService: AiService,
     private readonly macroService: MacroService,
+    private readonly goldService: GoldService,
   ) {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (!token) {
@@ -80,6 +83,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 • Sau đó chỉ cần <b>Reply (Trả lời)</b> trực tiếp tin nhắn của Bot để tiếp tục cuộc trò chuyện chuyên sâu với đầy đủ ngữ cảnh!
 
 📋 <b>CÁC LỆNH TÍNH NĂNG NHANH:</b>
+🟡 <code>/gold</code> (hoặc <code>/xau</code>) - Bảng giá & RSI đa khung thời gian Vàng (XAU/USD)
+🔔 <code>/goldalert</code> (hoặc <code>/xaualert</code>) - Cài đặt cảnh báo RSI Quá mua/Quá bán Vàng
 🏛️ <code>/analysis MÃ</code> - Báo cáo phân tích toàn diện 7 trụ cột (VD: <code>/analysis SSI</code>)
 🌍 <code>/calendar</code> - Lịch sự kiện kinh tế vĩ mô hôm nay (CPI, PPI, NFP, Thất nghiệp...)
 ⚙️ <code>/settings</code> - Cài đặt bộ lọc mức độ cảnh báo vĩ mô tức thì (Cao/TB/Thấp)
@@ -531,6 +536,149 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       const updated = await this.watchlistService.updateUserMacroAlertLevels(chatId, [1, 0]);
       await ctx.answerCbQuery('🎯 Đã khôi phục về mặc định: Cao + Trung bình!');
       const { text, keyboard } = this.renderMacroSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // 13. Lệnh /gold hoặc /xau, /vang - Xem bảng giá & RSI đa khung thời gian Vàng XAU/USD
+    this.bot.command(['gold', 'xau', 'vang', 'goldrsi', 'xaursi'], async (ctx) => {
+      const chatId = ctx.chat.id.toString();
+      const username = ctx.from?.username || ctx.from?.first_name;
+      await this.watchlistService.registerUser(chatId, username);
+
+      try {
+        const overview = await this.goldService.getXauOverview();
+        const message = this.goldService.renderOverviewMessage(overview);
+        const keyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('🔄 Cập nhật giá & RSI', 'xau_view_overview'),
+            Markup.button.callback('⚙️ Cài đặt cảnh báo', 'xau_open_settings'),
+          ],
+        ]);
+        await ctx.replyWithHTML(message, keyboard);
+      } catch (e: any) {
+        this.logger.error(`Lỗi lệnh /gold: ${e.message}`);
+        await ctx.replyWithHTML(`⚠️ Không thể lấy dữ liệu Vàng XAU/USD: ${e.message}`);
+      }
+    });
+
+    // 14. Lệnh /goldalert hoặc /xaualert - Menu cấu hình cảnh báo RSI Vàng
+    this.bot.command(['goldalert', 'xaualert', 'goldsetting', 'xausetting', 'goldsettings'], async (ctx) => {
+      const chatId = ctx.chat.id.toString();
+      const username = ctx.from?.username || ctx.from?.first_name;
+      await this.watchlistService.registerUser(chatId, username);
+
+      const settings = await this.goldService.getUserSettings(chatId);
+      const { text, keyboard } = this.renderXauSettingsMenu(settings);
+      await ctx.replyWithHTML(text, keyboard);
+    });
+
+    // Action: Xem hoặc làm mới bảng RSI Vàng
+    this.bot.action('xau_view_overview', async (ctx) => {
+      await ctx.answerCbQuery('🔄 Đang tải dữ liệu RSI Vàng mới nhất...');
+      try {
+        const overview = await this.goldService.getXauOverview(true);
+        const message = this.goldService.renderOverviewMessage(overview);
+        const keyboard = Markup.inlineKeyboard([
+          [
+            Markup.button.callback('🔄 Cập nhật giá & RSI', 'xau_view_overview'),
+            Markup.button.callback('⚙️ Cài đặt cảnh báo', 'xau_open_settings'),
+          ],
+        ]);
+        try {
+          await ctx.editMessageText(message, { parse_mode: 'HTML', ...keyboard });
+        } catch (e) {
+          await ctx.replyWithHTML(message, keyboard);
+        }
+      } catch (e: any) {
+        await ctx.replyWithHTML(`⚠️ Không thể tải dữ liệu Vàng: ${e.message}`);
+      }
+    });
+
+    // Action: Mở menu cài đặt cảnh báo Vàng
+    this.bot.action('xau_open_settings', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      await ctx.answerCbQuery();
+      const settings = await this.goldService.getUserSettings(chatId);
+      const { text, keyboard } = this.renderXauSettingsMenu(settings);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {
+        await ctx.replyWithHTML(text, keyboard);
+      }
+    });
+
+    // Action: Bật/Tắt tổng thể nhận cảnh báo Vàng
+    this.bot.action('xau_toggle_master', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const updated = await this.goldService.toggleEnabled(chatId);
+      await ctx.answerCbQuery(
+        updated.enabled ? '🔔 Đã BẬT nhận cảnh báo RSI Vàng!' : '🔕 Đã TẮT nhận cảnh báo RSI Vàng!',
+      );
+      const { text, keyboard } = this.renderXauSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // Action: Bật/Tắt một khung thời gian cụ thể (M1, M5, M15, M30, H1, H4, D1)
+    this.bot.action(/^xau_toggle_tf:([A-Za-z0-9]+)$/, async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const tf = ctx.match[1] as XauTimeframe;
+      const updated = await this.goldService.toggleTimeframe(chatId, tf);
+      const isEnabled = updated.timeframes.includes(tf);
+      const label = this.goldService.timeframeLabels[tf] || tf;
+
+      await ctx.answerCbQuery(isEnabled ? `✅ Đã BẬT: ${label}` : `❌ Đã TẮT: ${label}`);
+      const { text, keyboard } = this.renderXauSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // Action: Chọn bộ ngưỡng RSI (70/30, 75/25, 80/20)
+    this.bot.action(/^xau_set_threshold:(\d+)_(\d+)$/, async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const ob = parseInt(ctx.match[1], 10);
+      const os = parseInt(ctx.match[2], 10);
+      const updated = await this.goldService.setThresholdPreset(chatId, ob, os);
+      await ctx.answerCbQuery(`🎯 Đã áp dụng ngưỡng: Quá mua >= ${ob} | Quá bán <= ${os}`);
+      const { text, keyboard } = this.renderXauSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // Action: Bật tất cả các khung thời gian
+    this.bot.action('xau_set_all_tf', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const updated = await this.goldService.updateUserSettings(chatId, {
+        timeframes: ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'],
+      });
+      await ctx.answerCbQuery('🔔 Đã BẬT tất cả 7 khung thời gian!');
+      const { text, keyboard } = this.renderXauSettingsMenu(updated);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {}
+    });
+
+    // Action: Đặt về các khung khuyên dùng (M15, M30, H1, H4, D1)
+    this.bot.action('xau_set_default_tf', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const updated = await this.goldService.updateUserSettings(chatId, {
+        timeframes: ['M15', 'M30', 'H1', 'H4', 'D1'],
+        overboughtRsi: 70,
+        oversoldRsi: 30,
+      });
+      await ctx.answerCbQuery('🎯 Đã khôi phục khung thời gian khuyên dùng (M15, M30, H1, H4, D1)!');
+      const { text, keyboard } = this.renderXauSettingsMenu(updated);
       try {
         await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
       } catch (e) {}
@@ -1150,6 +1298,87 @@ ${summaryTag}
       [
         Markup.button.callback('📅 Xem lịch kinh tế hôm nay', 'macro_view_today'),
       ],
+    ]);
+
+    return { text, keyboard };
+  }
+
+  /**
+   * Tạo nội dung giao diện HTML và inline keyboard cho menu cài đặt cảnh báo RSI Vàng XAU/USD
+   */
+  private renderXauSettingsMenu(settings: UserXauSettings) {
+    const isMasterOn = settings.enabled;
+    const tfs = settings.timeframes;
+
+    const isM1 = tfs.includes('M1');
+    const isM5 = tfs.includes('M5');
+    const isM15 = tfs.includes('M15');
+    const isM30 = tfs.includes('M30');
+    const isH1 = tfs.includes('H1');
+    const isH4 = tfs.includes('H4');
+    const isD1 = tfs.includes('D1');
+
+    const isPreset70 = settings.overboughtRsi === 70 && settings.oversoldRsi === 30;
+    const isPreset75 = settings.overboughtRsi === 75 && settings.oversoldRsi === 25;
+    const isPreset80 = settings.overboughtRsi === 80 && settings.oversoldRsi === 20;
+
+    let statusHeader = '';
+    if (!isMasterOn) {
+      statusHeader = '🔕 <b>TRẠNG THÁI: TẮT CẢNH BÁO</b> (Không nhận thông báo RSI)';
+    } else {
+      statusHeader = `🔔 <b>TRẠNG THÁI: ĐANG BẬT</b> (${tfs.length}/7 khung được kích hoạt)`;
+    }
+
+    let text = `⚙️ <b>CÀI ĐẶT CẢNH BÁO RSI VÀNG (XAU/USD)</b>\n`;
+    text += `${statusHeader}\n\n`;
+    text += `<i>Hệ thống tự động quét và gửi tin nhắn tức thì khi RSI của XAU/USD chạm hoặc vượt vùng Quá Mua / Quá Bán trên các khung thời gian bạn chọn:</i>\n\n`;
+
+    text += `⏳ <b>Các khung thời gian đang kích hoạt:</b>\n`;
+    text += `• M1 (1 Phút): ${isM1 ? '🟢 Bật' : '⚪ Tắt'}\n`;
+    text += `• M5 (5 Phút): ${isM5 ? '🟢 Bật' : '⚪ Tắt'}\n`;
+    text += `• M15 (15 Phút): ${isM15 ? '🟢 Bật' : '⚪ Tắt'}\n`;
+    text += `• M30 (30 Phút): ${isM30 ? '🟢 Bật' : '⚪ Tắt'}\n`;
+    text += `• H1 (1 Giờ): ${isH1 ? '🟢 Bật' : '⚪ Tắt'}\n`;
+    text += `• H4 (4 Giờ): ${isH4 ? '🟢 Bật' : '⚪ Tắt'}\n`;
+    text += `• D1 (1 Ngày): ${isD1 ? '🟢 Bật' : '⚪ Tắt'}\n\n`;
+
+    text += `🎯 <b>Ngưỡng kích hoạt:</b> Quá Mua >= <code>${settings.overboughtRsi}</code> | Quá Bán <= <code>${settings.oversoldRsi}</code>\n\n`;
+    text += `💡 <i>Bấm vào các nút bên dưới để Bật/Tắt từng khung hoặc chọn bộ ngưỡng nhanh:</i>`;
+
+    const keyboard = Markup.inlineKeyboard([
+      // Hàng 1: Nút Master On/Off
+      [
+        Markup.button.callback(
+          isMasterOn ? '🔕 TẮT TẤT CẢ CẢNH BÁO' : '🔔 BẬT NHẬN CẢNH BÁO',
+          'xau_toggle_master',
+        ),
+      ],
+      // Hàng 2: Khung ngắn hạn
+      [
+        Markup.button.callback(`${isM1 ? '✅' : '❌'} M1 (1p)`, 'xau_toggle_tf:M1'),
+        Markup.button.callback(`${isM5 ? '✅' : '❌'} M5 (5p)`, 'xau_toggle_tf:M5'),
+        Markup.button.callback(`${isM15 ? '✅' : '❌'} M15 (15p)`, 'xau_toggle_tf:M15'),
+      ],
+      // Hàng 3: Khung trung & dài hạn
+      [
+        Markup.button.callback(`${isM30 ? '✅' : '❌'} M30`, 'xau_toggle_tf:M30'),
+        Markup.button.callback(`${isH1 ? '✅' : '❌'} H1 (1h)`, 'xau_toggle_tf:H1'),
+        Markup.button.callback(`${isH4 ? '✅' : '❌'} H4 (4h)`, 'xau_toggle_tf:H4'),
+        Markup.button.callback(`${isD1 ? '✅' : '❌'} D1 (1d)`, 'xau_toggle_tf:D1'),
+      ],
+      // Hàng 4: Chọn ngưỡng RSI
+      [
+        Markup.button.callback(`${isPreset70 ? '🔘' : '⚪'} 70 / 30 (Chuẩn)`, 'xau_set_threshold:70_30'),
+        Markup.button.callback(`${isPreset75 ? '🔘' : '⚪'} 75 / 25 (Lọc nhiễu)`, 'xau_set_threshold:75_25'),
+        Markup.button.callback(`${isPreset80 ? '🔘' : '⚪'} 80 / 20 (Cực trị)`, 'xau_set_threshold:80_20'),
+      ],
+      // Hàng 5: Nút thiết lập nhanh
+      [
+        Markup.button.callback('🔔 Bật tất cả 7 khung', 'xau_set_all_tf'),
+        Markup.button.callback('🎯 Khuyên dùng (M15-D1)', 'xau_set_default_tf'),
+      ],
+      // Hàng 6: Xem bảng giá Vàng
+      [Markup.button.callback('📊 Xem bảng giá & RSI Vàng ngay', 'xau_view_overview')],
     ]);
 
     return { text, keyboard };

@@ -9,6 +9,7 @@ import { TelegramModule } from './telegram/telegram.module';
 import { CronModule } from './cron/cron.module';
 import { AiModule } from './ai/ai.module';
 import { MacroModule } from './macro/macro.module';
+import { GoldModule } from './gold/gold.module';
 
 @Controller()
 class HelloController {
@@ -32,6 +33,7 @@ class HelloController {
     CronModule,
     AiModule,
     MacroModule,
+    GoldModule,
   ],
   controllers: [HelloController],
 })
