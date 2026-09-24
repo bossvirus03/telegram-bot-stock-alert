@@ -394,7 +394,7 @@ export class GoldService {
             rsi,
             alertType: 'OVERBOUGHT',
             level: isExtreme ? 'EXTREME_ZONE' : 'NORMAL_ZONE',
-            message: `XAU/USD đã tiến vào vùng ${isExtreme ? 'CỰC KỲ QUÁ MUA (RSI >= 80)' : 'QUÁ MUA (RSI >= 70)'} trên khung ${this.timeframeLabels[tf]}.`,
+            message: `XAU/USD đã tiến vào vùng ${isExtreme ? 'CỰC KỲ QUÁ MUA (RSI ≥ 80)' : 'QUÁ MUA (RSI ≥ 70)'} trên khung ${this.timeframeLabels[tf]}.`,
             actionAdvice: isExtreme
               ? '⚠️ Áp lực chốt lời rất mạnh! Rủi ro đảo chiều giảm sâu cao. Hạn chế tối đa việc mở vị thế BUY đuổi giá, cân nhắc chốt lời hoặc canh tín hiệu SELL phân kỳ ngắn hạn.'
               : '⚠️ Lực mua đang hưng phấn quá mức. Cân nhắc dời Stoploss bảo toàn lợi nhuận hoặc hạ bớt tỷ trọng lệnh BUY ngắn hạn.',
@@ -423,7 +423,7 @@ export class GoldService {
             rsi,
             alertType: 'OVERSOLD',
             level: isExtreme ? 'EXTREME_ZONE' : 'NORMAL_ZONE',
-            message: `XAU/USD đã giảm sâu vào vùng ${isExtreme ? 'CỰC KỲ QUÁ BÁN (RSI <= 20)' : 'QUÁ BÁN (RSI <= 30)'} trên khung ${this.timeframeLabels[tf]}.`,
+            message: `XAU/USD đã giảm sâu vào vùng ${isExtreme ? 'CỰC KỲ QUÁ BÁN (RSI ≤ 20)' : 'QUÁ BÁN (RSI ≤ 30)'} trên khung ${this.timeframeLabels[tf]}.`,
             actionAdvice: isExtreme
               ? '💡 Áp lực bán đã cạn kiệt cực độ! Tỷ lệ xuất hiện nhịp hồi phục kỹ thuật (Short Squeeze / Rebound) rất cao. Tránh SELL đuổi đáy, quan sát tín hiệu đảo chiều nến để canh BUY bắt nhịp hồi.'
               : '💡 Đà giảm đang đi vào vùng quá tải. Có thể chuẩn bị kế hoạch canh gom BUY khi xuất hiện nến đảo chiều hỗ trợ.',
@@ -650,8 +650,8 @@ export class GoldService {
     }
 
     msg += `\n💡 <b>Quy ước vùng RSI:</b>\n`;
-    msg += `🔴 <b>>= 70:</b> Quá mua (Overbought) - Cẩn trọng đảo chiều giảm\n`;
-    msg += `🟢 <b><= 30:</b> Quá bán (Oversold) - Cơ hội hồi phục tăng\n`;
+    msg += `🔴 <b>≥ 70:</b> Quá mua (Overbought) - Cẩn trọng đảo chiều giảm\n`;
+    msg += `🟢 <b>≤ 30:</b> Quá bán (Oversold) - Cơ hội hồi phục tăng\n`;
     msg += `⚪ <b>30 - 70:</b> Vùng trung tính dao động`;
 
     return msg;

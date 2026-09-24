@@ -1342,7 +1342,7 @@ ${summaryTag}
     text += `• H4 (4 Giờ): ${isH4 ? '🟢 Bật' : '⚪ Tắt'}\n`;
     text += `• D1 (1 Ngày): ${isD1 ? '🟢 Bật' : '⚪ Tắt'}\n\n`;
 
-    text += `🎯 <b>Ngưỡng kích hoạt:</b> Quá Mua >= <code>${settings.overboughtRsi}</code> | Quá Bán <= <code>${settings.oversoldRsi}</code>\n\n`;
+    text += `🎯 <b>Ngưỡng kích hoạt:</b> Quá Mua ≥ <code>${settings.overboughtRsi}</code> | Quá Bán ≤ <code>${settings.oversoldRsi}</code>\n\n`;
     text += `💡 <i>Bấm vào các nút bên dưới để Bật/Tắt từng khung hoặc chọn bộ ngưỡng nhanh:</i>`;
 
     const keyboard = Markup.inlineKeyboard([
