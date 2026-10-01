@@ -82,3 +82,25 @@ model XauAlertLog {
   @@map("xau_alert_logs")
 }
 
+model PriceAlert {
+  id             Int       @id @default(autoincrement())
+  chatId         String
+  username       String?
+  symbol         String    // "XAU", "BTC", "ETH", "HPG", ...
+  displaySymbol  String    // "XAU/USD", "BTC/USDT", "HPG", ...
+  assetType      String    // "GOLD", "CRYPTO", "STOCK"
+  targetPrice    Float
+  initialPrice   Float
+  condition      String    // "ABOVE", "BELOW"
+  status         String    @default("ACTIVE") // "ACTIVE", "TRIGGERED", "CANCELLED"
+  triggeredAt    DateTime?
+  triggeredPrice Float?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status])
+  @@index([chatId, status])
+  @@map("price_alerts")
+}
+
+

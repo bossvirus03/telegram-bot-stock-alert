@@ -7,6 +7,7 @@ import { StockDetail } from '../stock/stock.interface';
 import { Markup } from 'telegraf';
 import { MacroService } from '../macro/macro.service';
 import { GoldService } from '../gold/gold.service';
+import { AlertService } from '../alert/alert.service';
 import { TelegramUser } from '@prisma/client';
 
 @Injectable()
@@ -20,6 +21,7 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
   private flowIntervalId: NodeJS.Timeout | null = null;
   private macroTimeoutId: NodeJS.Timeout | null = null;
   private goldIntervalId: NodeJS.Timeout | null = null;
+  private priceAlertIntervalId: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly newsService: NewsService,
@@ -28,6 +30,7 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
     private readonly telegramService: TelegramService,
     private readonly macroService: MacroService,
     private readonly goldService: GoldService,
+    private readonly alertService: AlertService,
   ) {}
 
   onModuleInit() {
@@ -71,6 +74,19 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Lỗi khởi chạy XAU RSI ban đầu: ${err.message}`);
       });
     }, 8000);
+
+    // 5. Vòng lặp theo dõi Cảnh báo giá tức thì (XAU, BTC, Crypto, Stock VN) (mỗi 12 giây)
+    this.priceAlertIntervalId = setInterval(() => {
+      this.alertService.checkAllActiveAlerts().catch((err) => {
+        this.logger.error(`Lỗi trong vòng lặp Price Alert Monitor: ${err.message}`);
+      });
+    }, 12000);
+
+    setTimeout(() => {
+      this.alertService.checkAllActiveAlerts().catch((err) => {
+        this.logger.error(`Lỗi khởi chạy Price Alert ban đầu: ${err.message}`);
+      });
+    }, 4000);
   }
 
   onModuleDestroy() {
@@ -89,6 +105,10 @@ export class CronService implements OnModuleInit, OnModuleDestroy {
     if (this.goldIntervalId) {
       clearInterval(this.goldIntervalId);
       this.goldIntervalId = null;
+    }
+    if (this.priceAlertIntervalId) {
+      clearInterval(this.priceAlertIntervalId);
+      this.priceAlertIntervalId = null;
     }
     this.logger.log('🛑 Cron service đã hủy tất cả background timers an toàn.');
   }

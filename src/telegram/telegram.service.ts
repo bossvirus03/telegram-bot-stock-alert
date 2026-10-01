@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Telegraf, Markup } from 'telegraf';
 import { WatchlistService } from '../watchlist/watchlist.service';
@@ -7,6 +7,7 @@ import { NewsService } from '../news/news.service';
 import { AiService } from '../ai/ai.service';
 import { MacroService } from '../macro/macro.service';
 import { GoldService } from '../gold/gold.service';
+import { AlertService } from '../alert/alert.service';
 import { UserXauSettings, XauTimeframe } from '../gold/gold.interface';
 
 @Injectable()
@@ -31,6 +32,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
     private readonly aiService: AiService,
     private readonly macroService: MacroService,
     private readonly goldService: GoldService,
+    @Inject(forwardRef(() => AlertService))
+    private readonly alertService: AlertService,
   ) {
     const token = this.configService.get<string>('TELEGRAM_BOT_TOKEN');
     if (!token) {
@@ -70,6 +73,11 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
       const helpMessage = `
 📈 <b>CHÀO MỪNG ĐẾN VỚI BOT PHÂN TÍCH & DÒNG TIỀN CHỨNG KHOÁN VN</b> 🇻🇳
 
+🎯 <b>CẢNH BÁO GIÁ TỨC THÌ (VÀNG, CRYPTO, CỔ PHIẾU):</b>
+• Dùng lệnh <code>/alert MÃ GIÁ</code> (VD: <code>/alert xau 4200</code>, <code>/alert btc 83000</code>, <code>/alert hpg 30.5</code>)
+• Dùng lệnh <code>/alerts</code> để xem & quản lý danh sách cảnh báo giá đang chờ.
+  <i>👉 Bot tự động quét liên tục mỗi vài giây và thông báo NGAY LẬP TỨC khi giá thị trường chạm hoặc vượt ngưỡng kỳ vọng!</i>
+
 🏛️ <b>PHÂN TÍCH TOÀN DIỆN MÃ CỔ PHIẾU:</b>
 • Dùng lệnh <code>/analysis MÃ</code> (VD: <code>/analysis SSI</code> hoặc <code>/analysis FPT</code>)
   <i>👉 Bot tự động bóc tách tin tức báo chí mới nhất, phân tích bối cảnh vĩ mô, dòng vốn quỹ ngoại ETF, game doanh nghiệp, BCTC, chỉ số tài chính, ban lãnh đạo & điểm mua kỹ thuật!</i>
@@ -83,6 +91,8 @@ export class TelegramService implements OnModuleInit, OnModuleDestroy {
 • Sau đó chỉ cần <b>Reply (Trả lời)</b> trực tiếp tin nhắn của Bot để tiếp tục cuộc trò chuyện chuyên sâu với đầy đủ ngữ cảnh!
 
 📋 <b>CÁC LỆNH TÍNH NĂNG NHANH:</b>
+🎯 <code>/alert MÃ GIÁ</code> - Đặt cảnh báo giá Vàng, BTC, ETH, CP VN (VD: <code>/alert xau 4200</code>)
+📋 <code>/alerts</code> - Quản lý danh sách cảnh báo giá đang hoạt động
 🟡 <code>/gold</code> (hoặc <code>/xau</code>) - Bảng giá & RSI đa khung thời gian Vàng (XAU/USD)
 🔔 <code>/goldalert</code> (hoặc <code>/xaualert</code>) - Cài đặt cảnh báo RSI Quá mua/Quá bán Vàng
 🏛️ <code>/analysis MÃ</code> - Báo cáo phân tích toàn diện 7 trụ cột (VD: <code>/analysis SSI</code>)
@@ -684,7 +694,188 @@ ${priceIcon} <b>Giá hiện tại:</b> ${detail.currentPrice},000 VNĐ (${detail
       } catch (e) {}
     });
 
-    // 13. Lệnh /ai <CÂU HỎI> (hoặc /chat, /ask, /gemini) để trò chuyện và phân tích chuyên sâu với Gemini AI
+    // 13. Lệnh /alert <MÃ> <GIÁ_MỤC_TIÊU> hoặc /alerts hoặc /alert list / del / clear
+    this.bot.command(['alert', 'alerts', 'canhbao', 'pricealert', 'alertlist', 'dsalert'], async (ctx) => {
+      const chatId = ctx.chat.id.toString();
+      const username = ctx.from?.username || ctx.from?.first_name;
+      await this.watchlistService.registerUser(chatId, username);
+
+      const text = ctx.message.text.trim();
+      const argsStr = text.replace(/^\/(alert|alerts|canhbao|pricealert|alertlist|dsalert)(@\w+)?\s*/i, '').trim();
+      const parts = argsStr.split(/\s+/).filter(Boolean);
+
+      // Trường hợp 1: Không có tham số hoặc gõ /alerts hoặc /alert list
+      if (parts.length === 0 || parts[0].toLowerCase() === 'list' || parts[0].toLowerCase() === 'ds') {
+        const { text: msgText, keyboard } = await this.renderPriceAlertsView(chatId);
+        return ctx.replyWithHTML(msgText, keyboard);
+      }
+
+      // Trường hợp 2: /alert help hoặc /alert ?
+      if (parts[0].toLowerCase() === 'help' || parts[0] === '?') {
+        const helpText = `
+🎯 <b>HƯỚNG DẪN ĐẶT CẢNH BÁO GIÁ TỨC THÌ</b> 🔔
+
+Bot sẽ theo dõi liên tục giá thị trường và gửi thông báo NGAY LẬP TỨC khi giá chạm hoặc vượt ngưỡng kỳ vọng của bạn!
+
+📌 <b>CÚ PHÁP ĐẶT CẢNH BÁO:</b>
+<code>/alert MÃ GIÁ_MỤC_TIÊU</code>
+
+💡 <b>VÍ DỤ CỤ THỂ:</b>
+🟡 <b>Vàng (XAU/USD):</b>
+• <code>/alert xau 4200</code> <i>(Cảnh báo khi Vàng chạm $4,200)</i>
+• <code>/alert gold 2650.5</code>
+
+💎 <b>Tiền điện tử (Crypto):</b>
+• <code>/alert btc 83000</code> <i>(Cảnh báo khi Bitcoin đạt $83,000)</i>
+• <code>/alert btc 83k</code>
+• <code>/alert eth 3500</code>
+• <code>/alert sol 220</code>
+• <code>/alert pepe 0.000015</code>
+
+🇻🇳 <b>Cổ phiếu Việt Nam:</b>
+• <code>/alert hpg 30.5</code> <i>(hoặc <code>/alert hpg 30500</code>)</i>
+• <code>/alert ssi 35.2</code>
+• <code>/alert fpt 140</code>
+
+📋 <b>CÁC LỆNH QUẢN LÝ:</b>
+• <code>/alerts</code> hoặc <code>/alert list</code> - Xem danh sách cảnh báo đang chờ
+• <code>/alert del [MÃ_ID]</code> - Hủy một cảnh báo (VD: <code>/alert del 5</code>)
+• <code>/alert clear</code> - Hủy toàn bộ cảnh báo của bạn
+        `.trim();
+        return ctx.replyWithHTML(helpText);
+      }
+
+      // Trường hợp 3: /alert del <id> hoặc /alert remove <id> hoặc /alert xoa <id>
+      if (['del', 'remove', 'xoa', 'cancel', 'huy'].includes(parts[0].toLowerCase())) {
+        if (parts.length < 2) {
+          return ctx.replyWithHTML('⚠️ Vui lòng nhập mã ID cảnh báo cần hủy. Ví dụ: <code>/alert del 12</code>');
+        }
+        if (parts[1].toLowerCase() === 'all' || parts[1].toLowerCase() === 'tatca') {
+          const res = await this.alertService.clearUserAlerts(chatId);
+          return ctx.replyWithHTML(res.message);
+        }
+        const alertId = parseInt(parts[1], 10);
+        if (isNaN(alertId) || alertId <= 0) {
+          return ctx.replyWithHTML('⚠️ Mã ID không hợp lệ. Vui lòng nhập số nguyên dương. Ví dụ: <code>/alert del 12</code>');
+        }
+        const res = await this.alertService.deleteAlert(chatId, alertId);
+        return ctx.replyWithHTML(res.message);
+      }
+
+      // Trường hợp 4: /alert clear hoặc /alert del all
+      if (parts[0].toLowerCase() === 'clear') {
+        const res = await this.alertService.clearUserAlerts(chatId);
+        return ctx.replyWithHTML(res.message);
+      }
+
+      // Trường hợp 5: /alert <symbol> <targetPrice> (VD: /alert xau 4200 hoặc /alert btc 83000)
+      if (parts.length >= 2) {
+        const rawSymbol = parts[0];
+        const rawTarget = parts[1];
+
+        const waitMsg = await ctx.replyWithHTML(`⏳ Đang kiểm tra giá thị trường cho <b>${rawSymbol.toUpperCase()}</b>...`);
+
+        const result = await this.alertService.createPriceAlert(chatId, username, rawSymbol, rawTarget);
+
+        const keyboard = result.success
+          ? Markup.inlineKeyboard([
+              [
+                Markup.button.callback('📋 Danh sách cảnh báo', 'alert_refresh'),
+                Markup.button.callback('➕ Thêm cảnh báo mới', 'alert_new'),
+              ],
+            ])
+          : undefined;
+
+        try {
+          if (keyboard) {
+            await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, result.message, {
+              parse_mode: 'HTML',
+              ...keyboard,
+            });
+          } else {
+            await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, result.message, {
+              parse_mode: 'HTML',
+            });
+          }
+        } catch (e) {
+          await ctx.replyWithHTML(result.message, keyboard);
+        }
+        return;
+      }
+
+      // Trường hợp chỉ nhập 1 tham số mà không phải các từ khóa trên
+      return ctx.replyWithHTML(
+        `⚠️ Cú pháp chưa đầy đủ. Vui lòng nhập cả mã tài sản và mức giá mục tiêu.\n\n` +
+        `Ví dụ:\n` +
+        `• <code>/alert xau 4200</code>\n` +
+        `• <code>/alert btc 83000</code>\n` +
+        `• <code>/alert hpg 30.5</code>\n\n` +
+        `👉 Gõ <code>/alert help</code> để xem hướng dẫn chi tiết.`
+      );
+    });
+
+    // Action: Làm mới danh sách cảnh báo giá
+    this.bot.action('alert_refresh', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      await ctx.answerCbQuery('🔄 Đang cập nhật giá mới nhất...');
+      const { text, keyboard } = await this.renderPriceAlertsView(chatId);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {
+        await ctx.replyWithHTML(text, keyboard);
+      }
+    });
+
+    // Action: Hướng dẫn đặt cảnh báo mới
+    this.bot.action('alert_new', async (ctx) => {
+      await ctx.answerCbQuery();
+      const helpText = `
+🎯 <b>ĐẶT CẢNH BÁO GIÁ MỚI:</b>
+
+Gõ lệnh theo cú pháp:
+<code>/alert MÃ GIÁ_MỤC_TIÊU</code>
+
+💡 <b>Ví dụ mẫu:</b>
+• <code>/alert xau 4200</code> <i>(Vàng $4,200)</i>
+• <code>/alert btc 83000</code> <i>(Bitcoin $83,000)</i>
+• <code>/alert eth 3500</code> <i>(Ethereum $3,500)</i>
+• <code>/alert hpg 30.5</code> <i>(HPG 30,500đ)</i>
+      `.trim();
+      await ctx.replyWithHTML(helpText);
+    });
+
+    // Action: Xóa một alert cụ thể qua inline button
+    this.bot.action(/^alert_del:(\d+)$/, async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const alertId = parseInt(ctx.match[1], 10);
+      const res = await this.alertService.deleteAlert(chatId, alertId);
+      await ctx.answerCbQuery(res.success ? `🗑 Đã xóa #${alertId}` : '⚠️ Không thể xóa');
+
+      const { text, keyboard } = await this.renderPriceAlertsView(chatId);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {
+        await ctx.replyWithHTML(text, keyboard);
+      }
+    });
+
+    // Action: Xóa tất cả cảnh báo của user
+    this.bot.action('alert_clear', async (ctx) => {
+      const chatId = ctx.chat?.id.toString();
+      if (!chatId) return;
+      const res = await this.alertService.clearUserAlerts(chatId);
+      await ctx.answerCbQuery(`🗑 Đã xóa ${res.count} cảnh báo!`);
+      const { text, keyboard } = await this.renderPriceAlertsView(chatId);
+      try {
+        await ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
+      } catch (e) {
+        await ctx.replyWithHTML(text, keyboard);
+      }
+    });
+
+    // 14. Lệnh /ai <CÂU HỎI> (hoặc /chat, /ask, /gemini) để trò chuyện và phân tích chuyên sâu với Gemini AI
     this.bot.command(['ai', 'chat', 'ask', 'gemini'], async (ctx) => {
       const text = ctx.message.text.trim();
       const query = text.replace(/^\/(ai|chat|ask|gemini)(@\w+)?\s*/i, '').trim();
@@ -1383,4 +1574,71 @@ ${summaryTag}
 
     return { text, keyboard };
   }
+
+  /**
+   * Tạo nội dung HTML và inline keyboard cho danh sách các cảnh báo giá đang chờ của User
+   */
+  private async renderPriceAlertsView(chatId: string): Promise<{ text: string; keyboard: any }> {
+    const activeAlerts = await this.alertService.getUserActiveAlerts(chatId);
+
+    if (activeAlerts.length === 0) {
+      const text = `
+📭 <b>BẠN CHƯA CÓ CẢNH BÁO GIÁ NÀO ĐANG HOẠT ĐỘNG</b>
+
+💡 <b>Cách đặt cảnh báo giá tức thì:</b>
+• 🟡 <b>Vàng:</b> <code>/alert xau 4200</code>
+• 💎 <b>Crypto:</b> <code>/alert btc 83000</code> | <code>/alert eth 3500</code>
+• 🇻🇳 <b>Cổ phiếu VN:</b> <code>/alert hpg 30.5</code> | <code>/alert ssi 35.2</code>
+
+<i>👉 Bot sẽ quét liên tục mỗi vài giây và thông báo ngay khi giá chạm hoặc vượt ngưỡng kỳ vọng!</i>
+      `.trim();
+
+      const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('➕ Hướng dẫn đặt cảnh báo', 'alert_new')],
+      ]);
+
+      return { text, keyboard };
+    }
+
+    let text = `🔔 <b>DANH SÁCH CẢNH BÁO GIÁ ĐANG CHỜ (${activeAlerts.length})</b>\n\n`;
+
+    const deleteButtons: any[] = [];
+
+    activeAlerts.forEach((item, index) => {
+      const alert = item.alert;
+      const condIcon = alert.condition === 'ABOVE' ? '🚀 ≥' : '🔻 ≤';
+      const assetIcon = alert.assetType === 'GOLD' ? '🟡' : alert.assetType === 'CRYPTO' ? '💎' : '🇻🇳';
+
+      text += `<b>${index + 1}. ${assetIcon} ${alert.displaySymbol}</b> <code>(#${alert.id})</code>\n`;
+      text += `• 🎯 <b>Giá đặt cảnh báo:</b> <code>${item.formattedTargetPrice}</code> (${condIcon})\n`;
+      text += `• 💵 <b>Giá thị trường hiện tại:</b> <code>${item.formattedCurrentPrice}</code>\n`;
+      text += `• 📊 <b>Biến động:</b> <b>${item.distanceText}</b> <i>(lúc đặt: ${item.formattedInitialPrice})</i>\n\n`;
+
+      deleteButtons.push(
+        Markup.button.callback(`🗑 Hủy #${alert.id} (${alert.symbol}) - ${item.formattedTargetPrice}`, `alert_del:${alert.id}`)
+      );
+    });
+
+    text += `<i>💡 Bấm vào nút bên dưới để hủy cảnh báo tương ứng:</i>`;
+
+    // Sắp xếp các nút hủy thành các hàng (mỗi hàng 1 nút hoặc 2 nút tuỳ độ dài text)
+    const buttonRows: any[][] = [];
+    for (let i = 0; i < deleteButtons.length; i++) {
+      buttonRows.push([deleteButtons[i]]);
+    }
+
+    // Hàng nút điều khiển chung
+    buttonRows.push([
+      Markup.button.callback('🔄 Làm mới giá', 'alert_refresh'),
+      Markup.button.callback('🗑 Hủy tất cả', 'alert_clear'),
+    ]);
+    buttonRows.push([
+      Markup.button.callback('➕ Đặt thêm cảnh báo', 'alert_new'),
+    ]);
+
+    const keyboard = Markup.inlineKeyboard(buttonRows);
+
+    return { text, keyboard };
+  }
 }
+

@@ -6,9 +6,19 @@ import { StockModule } from '../stock/stock.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { MacroModule } from '../macro/macro.module';
 import { GoldModule } from '../gold/gold.module';
+import { AlertModule } from '../alert/alert.module';
 
 @Module({
-  imports: [NewsModule, WatchlistModule, StockModule, TelegramModule, MacroModule, GoldModule],
+  imports: [
+    NewsModule,
+    WatchlistModule,
+    StockModule,
+    TelegramModule,
+    MacroModule,
+    GoldModule,
+    AlertModule,
+  ],
   providers: [CronService],
 })
 export class CronModule {}
+

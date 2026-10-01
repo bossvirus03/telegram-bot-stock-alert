@@ -10,6 +10,7 @@ import { CronModule } from './cron/cron.module';
 import { AiModule } from './ai/ai.module';
 import { MacroModule } from './macro/macro.module';
 import { GoldModule } from './gold/gold.module';
+import { AlertModule } from './alert/alert.module';
 
 @Controller()
 class HelloController {
@@ -34,6 +35,7 @@ class HelloController {
     AiModule,
     MacroModule,
     GoldModule,
+    AlertModule,
   ],
   controllers: [HelloController],
 })
