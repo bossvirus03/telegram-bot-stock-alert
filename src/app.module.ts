@@ -7,7 +7,6 @@ import { NewsModule } from './news/news.module';
 import { WatchlistModule } from './watchlist/watchlist.module';
 import { TelegramModule } from './telegram/telegram.module';
 import { CronModule } from './cron/cron.module';
-import { AiModule } from './ai/ai.module';
 import { MacroModule } from './macro/macro.module';
 import { GoldModule } from './gold/gold.module';
 import { AlertModule } from './alert/alert.module';
@@ -32,7 +31,6 @@ class HelloController {
     WatchlistModule,
     TelegramModule,
     CronModule,
-    AiModule,
     MacroModule,
     GoldModule,
     AlertModule,
