@@ -1,22 +1,20 @@
 import { Module } from '@nestjs/common';
 import { CronService } from './cron.service';
-import { NewsModule } from '../news/news.module';
 import { WatchlistModule } from '../watchlist/watchlist.module';
-import { StockModule } from '../stock/stock.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { MacroModule } from '../macro/macro.module';
 import { GoldModule } from '../gold/gold.module';
 import { AlertModule } from '../alert/alert.module';
+import { IndicatorModule } from '../indicator/indicator.module';
 
 @Module({
   imports: [
-    NewsModule,
     WatchlistModule,
-    StockModule,
     TelegramModule,
     MacroModule,
     GoldModule,
     AlertModule,
+    IndicatorModule,
   ],
   providers: [CronService],
 })

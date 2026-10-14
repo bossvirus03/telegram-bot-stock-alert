@@ -1,7 +1,7 @@
 {
-  "name": "stock-news-bot",
+  "name": "financial-alert-bot",
   "version": "1.0.0",
-  "description": "Bot phân tích và tự động gửi tin tức chứng khoán Việt Nam với NestJS, Prisma và Telegraf",
+  "description": "Bot phân tích tài chính, vĩ mô, vàng và tiền mã hóa với NestJS, Prisma và Telegraf",
   "author": "Antigravity",
   "private": true,
   "license": "MIT",

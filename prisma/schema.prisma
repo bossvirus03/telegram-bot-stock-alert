@@ -21,41 +21,6 @@ model TelegramUser {
   @@map("telegram_users")
 }
 
-model UserWatchlist {
-  id        Int      @id @default(autoincrement())
-  chatId    String
-  username  String?
-  symbol    String
-  createdAt DateTime @default(now())
-
-  @@unique([chatId, symbol])
-  @@map("user_watchlists")
-}
-
-model NewsArticle {
-  id             Int      @id @default(autoincrement())
-  url            String   @unique
-  title          String
-  summary        String?
-  source         String
-  symbols        String[]
-  publishedAt    DateTime?
-  sentToTelegram Boolean  @default(false)
-  createdAt      DateTime @default(now())
-
-  @@map("news_articles")
-}
-
-model StockAlertLog {
-  id        Int      @id @default(autoincrement())
-  symbol    String
-  alertType String
-  message   String
-  createdAt DateTime @default(now())
-
-  @@map("stock_alert_logs")
-}
-
 model MacroAlertLog {
   id        Int      @id @default(autoincrement())
   eventId   String   @unique
@@ -86,9 +51,9 @@ model PriceAlert {
   id             Int       @id @default(autoincrement())
   chatId         String
   username       String?
-  symbol         String    // "XAU", "BTC", "ETH", "HPG", ...
-  displaySymbol  String    // "XAU/USD", "BTC/USDT", "HPG", ...
-  assetType      String    // "GOLD", "CRYPTO", "STOCK"
+  symbol         String    // "XAU", "BTC", "ETH", "SOL", ...
+  displaySymbol  String    // "XAU/USD", "BTC/USDT", ...
+  assetType      String    // "GOLD", "CRYPTO"
   targetPrice    Float
   initialPrice   Float
   condition      String    // "ABOVE", "BELOW"
@@ -102,5 +67,44 @@ model PriceAlert {
   @@index([chatId, status])
   @@map("price_alerts")
 }
+
+model EmaAlert {
+  id              Int       @id @default(autoincrement())
+  chatId          String
+  username        String?
+  symbol          String    // "XAU", "BTC", "ETH", "SOL", ...
+  displaySymbol   String    // "XAU/USD", "BTC/USDT", ...
+  assetType       String    // "GOLD", "CRYPTO"
+  timeframe       String    // "M1", "M5", "M15", "M30", "H1", "H4", "D1"
+  fastPeriod      Int       @default(9)
+  slowPeriod      Int       @default(21)
+  lastCrossType   String?   // "BULLISH", "BEARISH", "NONE"
+  lastCrossPrice  Float?
+  lastTriggeredAt DateTime?
+  status          String    @default("ACTIVE") // "ACTIVE", "PAUSED", "CANCELLED"
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([status])
+  @@index([chatId, status])
+  @@map("ema_alerts")
+}
+
+model EmaAlertLog {
+  id         Int      @id @default(autoincrement())
+  symbol     String
+  timeframe  String
+  crossType  String   // "BULLISH", "BEARISH"
+  fastPeriod Int
+  slowPeriod Int
+  fastValue  Float
+  slowValue  Float
+  price      Float
+  message    String
+  createdAt  DateTime @default(now())
+
+  @@map("ema_alert_logs")
+}
+
 
 

@@ -2,7 +2,6 @@ import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { GoldService } from '../gold/gold.service';
-import { StockService } from '../stock/stock.service';
 import { TelegramService } from '../telegram/telegram.service';
 import {
   AssetPriceInfo,
@@ -33,7 +32,6 @@ export class AlertService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly goldService: GoldService,
-    private readonly stockService: StockService,
     @Inject(forwardRef(() => TelegramService))
     private readonly telegramService: TelegramService,
   ) {}
@@ -149,37 +147,14 @@ export class AlertService {
         return info;
       }
     } catch (binanceErr: any) {
-      // Không tìm thấy trên Binance hoặc lỗi mạng, tiếp tục kiểm tra Cổ phiếu VN
-    }
-
-    // 3. Kiểm tra CỔ PHIẾU VIỆT NAM (HOSE, HNX, UPCOM)
-    try {
-      const stockDetail = await this.stockService.getStockDetail(symbolUpper);
-      if (stockDetail && stockDetail.currentPrice > 0) {
-        const price = stockDetail.currentPrice; // đơn vị nghìn đồng, ví dụ: 26.5 = 26,500đ
-        const info: AssetPriceInfo = {
-          symbol: symbolUpper,
-          displaySymbol: `${symbolUpper} (CK VN)`,
-          assetType: 'STOCK',
-          price,
-          change24h: stockDetail.changePercent,
-          unit: 'k VNĐ',
-          formattedPrice: `${price.toFixed(2)}k (${(price * 1000).toLocaleString('vi-VN')}đ)`,
-          exchange: 'Sàn HOSE/HNX (VPS)',
-        };
-        this.priceCache.set(cacheKey, { info, time: now });
-        return info;
-      }
-    } catch (stockErr: any) {
-      this.logger.warn(`Lỗi kiểm tra cổ phiếu VN ${symbolUpper}: ${stockErr.message}`);
+      // Không tìm thấy trên Binance hoặc lỗi mạng
     }
 
     throw new Error(
       `Không tìm thấy mã tài sản <b>"${rawSymbol}"</b>.\n` +
       `💡 Hỗ trợ:\n` +
       `• Vàng: <code>XAU</code>, <code>GOLD</code>\n` +
-      `• Crypto: <code>BTC</code>, <code>ETH</code>, <code>SOL</code>, <code>BNB</code>, <code>DOGE</code>, <code>PEPE</code>...\n` +
-      `• Cổ phiếu VN: <code>HPG</code>, <code>SSI</code>, <code>FPT</code>, <code>VND</code>, <code>MWG</code>...`,
+      `• Crypto: <code>BTC</code>, <code>ETH</code>, <code>SOL</code>, <code>BNB</code>, <code>DOGE</code>, <code>PEPE</code>...`,
     );
   }
 
@@ -200,15 +175,6 @@ export class AlertService {
    * Chuẩn hóa giá target theo đúng đơn vị của từng loại tài sản
    */
   normalizeTargetPrice(assetType: AssetType, currentPrice: number, inputTarget: number): number {
-    if (assetType === 'STOCK') {
-      // Đối với cổ phiếu VN: Nếu người dùng nhập 30500 hoặc 30,500đ trong khi currentPrice ở sàn là 26.5 (nghìn đồng)
-      if (inputTarget >= 1000 && currentPrice < 1000) {
-        return Number((inputTarget / 1000).toFixed(2));
-      }
-      // Ngược lại nếu người dùng nhập 30.5
-      return Number(inputTarget.toFixed(2));
-    }
-
     if (assetType === 'GOLD') {
       return Number(inputTarget.toFixed(2));
     }
@@ -229,10 +195,6 @@ export class AlertService {
     }
     if (assetType === 'CRYPTO') {
       return this.formatCryptoPrice(price);
-    }
-    if (assetType === 'STOCK') {
-      const vnd = price * 1000;
-      return `${price.toFixed(2)}k (${vnd.toLocaleString('vi-VN')}đ)`;
     }
     return `${price}`;
   }

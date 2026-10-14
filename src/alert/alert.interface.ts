@@ -1,18 +1,18 @@
-export type AssetType = 'GOLD' | 'CRYPTO' | 'STOCK';
+export type AssetType = 'GOLD' | 'CRYPTO';
 
 export type AlertCondition = 'ABOVE' | 'BELOW';
 
 export type AlertStatus = 'ACTIVE' | 'TRIGGERED' | 'CANCELLED';
 
 export interface AssetPriceInfo {
-  symbol: string;           // Ký hiệu chuẩn: "XAU", "BTC", "HPG"
-  displaySymbol: string;    // Hiển thị đẹp: "XAU/USD", "BTC/USDT", "HPG"
+  symbol: string;           // Ký hiệu chuẩn: "XAU", "BTC", "ETH"
+  displaySymbol: string;    // Hiển thị đẹp: "XAU/USD", "BTC/USDT"
   assetType: AssetType;
   price: number;            // Giá hiện tại theo đơn vị chuẩn
   change24h?: number;       // % thay đổi 24h nếu có
-  unit: string;             // "$", "k VNĐ", "VNĐ"
-  formattedPrice: string;   // Ví dụ: "$2,685.50", "$83,200.00", "30.50 (30,500đ)"
-  exchange?: string;        // "Binance", "TradingView/OANDA", "VPS/HOSE"
+  unit: string;             // "$"
+  formattedPrice: string;   // Ví dụ: "$2,685.50", "$83,200.00"
+  exchange?: string;        // "Binance", "TradingView/OANDA"
 }
 
 export interface PriceAlertItem {
